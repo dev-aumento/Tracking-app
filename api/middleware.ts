@@ -96,8 +96,40 @@ function requireEmployeesManage() {
   });
 }
 
+/**
+ * Employee directory view/edit: employees.manage / permissions.manage, or project manager role.
+ * Managers get read access + notice-period updates; full edits still require employees.manage.
+ */
+function requireEmployeesDirectoryAccess() {
+  return t.middleware(async (opts) => {
+    const { ctx, next } = opts;
+
+    if (!ctx.user) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: ErrorMessages.unauthenticated,
+      });
+    }
+
+    const role = String(ctx.user.role ?? "").toLowerCase();
+    if (
+      role === "manager" ||
+      hasPermission(ctx.user, "employees.manage") ||
+      hasPermission(ctx.user, "permissions.manage")
+    ) {
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }
+
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: ErrorMessages.insufficientRole,
+    });
+  });
+}
+
 export const authedQuery = t.procedure.use(requireAuth);
 export const adminQuery = authedQuery.use(requireRole("admin"));
 export const adminOrHrQuery = authedQuery.use(requireAdminOrHr());
 export const managerQuery = authedQuery.use(requireManagerOrAbove());
 export const employeesManageQuery = authedQuery.use(requireEmployeesManage());
+export const employeesDirectoryQuery = authedQuery.use(requireEmployeesDirectoryAccess());

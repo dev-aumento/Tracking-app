@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { hasPermission } from "@/lib/permissions";
@@ -24,6 +23,8 @@ import {
 } from "@/lib/project-appearance";
 import { Plus, X, Loader2, Search, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
+import { Navigate, useNavigate } from "react-router";
+import { isNativeApp } from "@/lib/platform";
 import { ModalBackdrop } from "@/components/shared/ModalBackdrop";
 import {
   AlertDialog,
@@ -37,6 +38,14 @@ import {
 } from "@/components/ui/alert-dialog";
 
 export default function Projects() {
+  if (isNativeApp()) {
+    return <Navigate to="/m/work?tab=projects" replace />;
+  }
+
+  return <ProjectsWebPage />;
+}
+
+function ProjectsWebPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [listState] = useState(() => loadProjectsListState());

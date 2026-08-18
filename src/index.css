@@ -139,8 +139,14 @@ html.dark .bg-\[\#E8ECF1\] {
   background-color: var(--dm-page) !important;
 }
 
-html.dark .bg-\[\#E8F0FE\] {
-  background-color: var(--dm-tint) !important;
+html.dark .bg-\[\#E8F0FE\],
+html.dark .bg-\[\#EEF2FF\],
+html.dark .bg-\[\#E0E7FF\] {
+  background-color: var(--dm-elevated) !important;
+}
+
+html.dark .active\:bg-\[\#E0E7FF\]:active {
+  background-color: var(--dm-muted) !important;
 }
 
 html.dark .bg-\[\#DCFCE7\] {
@@ -180,6 +186,20 @@ html.dark .hover\:bg-blue-50\/80:hover,
 html.dark .hover\:bg-blue-50\/50:hover,
 html.dark .hover\:bg-blue-100:hover {
   background-color: var(--dm-tint) !important;
+}
+
+html.dark .focus\:bg-blue-50:focus,
+html.dark .focus\:bg-blue-50:focus-visible {
+  background-color: var(--dm-tint) !important;
+}
+
+html.dark .data-\[state\=checked\]\:bg-blue-50[data-state="checked"],
+html.dark .data-\[highlighted\]\:bg-blue-50[data-highlighted] {
+  background-color: var(--dm-tint) !important;
+}
+
+html.dark .active\:bg-blue-100:active {
+  background-color: var(--dm-muted) !important;
 }
 
 html.dark .border-gray-50,
@@ -257,12 +277,67 @@ html.dark .rich-comment-content {
   color: var(--dm-text);
 }
 
-/* Allow selecting / copying comment text on mobile WebViews */
+/* Pasted / rendered tables in task descriptions and comments */
+.rich-comment-editor,
 .rich-comment-content,
-.rich-comment-content * {
-  -webkit-user-select: text;
-  user-select: text;
-  -webkit-touch-callout: default;
+.rich-comment-html {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+}
+
+.rich-comment-editor table,
+.rich-comment-content table,
+.rich-comment-html table {
+  width: max-content;
+  max-width: none;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+}
+
+.rich-comment-editor th,
+.rich-comment-editor td,
+.rich-comment-content th,
+.rich-comment-content td,
+.rich-comment-html th,
+.rich-comment-html td {
+  border: 1px solid #d1d5db;
+  padding: 0.375rem 0.625rem;
+  vertical-align: top;
+  text-align: left;
+  min-width: 2.5rem;
+}
+
+.rich-comment-editor th,
+.rich-comment-content th,
+.rich-comment-html th {
+  background: #f3f4f6;
+  font-weight: 600;
+}
+
+html.dark .rich-comment-editor th,
+html.dark .rich-comment-editor td,
+html.dark .rich-comment-content th,
+html.dark .rich-comment-content td,
+html.dark .rich-comment-html th,
+html.dark .rich-comment-html td {
+  border: 1px solid rgba(255, 255, 255, 0.85) !important;
+}
+
+html.dark .rich-comment-editor table,
+html.dark .rich-comment-content table,
+html.dark .rich-comment-html table {
+  border-color: rgba(255, 255, 255, 0.85);
+}
+
+html.dark .rich-comment-editor th,
+html.dark .rich-comment-content th,
+html.dark .rich-comment-html th {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f3f4f6;
 }
 
 html.dark .ProseMirror p.is-editor-empty:first-child::before {
@@ -384,3 +459,75 @@ html.dark .sidebar-chrome .text-\[\#1e3a5f\] {
     background-color: #54657f;
   }
 }
+
+/* Capacitor native shell — does not affect the browser web app */
+html.native-app {
+  color-scheme: dark;
+  background: #0d0d0d;
+}
+
+html.native-app body {
+  background: #0d0d0d;
+  overscroll-behavior-y: none;
+}
+
+html.native-app .scrollbar-none {
+  scrollbar-width: none;
+}
+html.native-app .scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* iOS-style frosted glass tab bar (WebView-safe)
+   Avoid isolation/transform here — they break backdrop-filter sampling. */
+html.native-app .native-glass-tabbar {
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+
+html.native-app.dark .native-glass-tabbar,
+html.dark.native-app .native-glass-tabbar,
+html.native-app:is(.dark) .native-glass-tabbar {
+  /* Keep opacity low so blur reads as glass over dark content */
+  background: rgba(22, 24, 28, 0.42);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  backdrop-filter: saturate(180%) blur(24px);
+}
+
+@supports not (
+  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
+  html.native-app .native-glass-tabbar {
+    background: rgba(255, 255, 255, 0.88);
+  }
+  html.native-app.dark .native-glass-tabbar,
+  html.dark.native-app .native-glass-tabbar {
+    background: rgba(28, 28, 32, 0.82);
+  }
+}
+
+html.native-app .native-feed-content h1 {
+  color: #f5f5f5 !important;
+}
+html.native-app .native-feed-content .text-gray-500,
+html.native-app .native-feed-content .text-gray-600 {
+  color: rgba(255, 255, 255, 0.55) !important;
+}
+html.native-app .native-feed-content .bg-white {
+  background-color: #1a1a1a !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: #f0f0f0;
+}
+html.native-app .native-feed-content .text-\[\#1F2937\] {
+  color: #f5f5f5 !important;
+}
+

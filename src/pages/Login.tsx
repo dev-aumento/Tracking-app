@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Building2, Loader2, UserRound } from "lucide-react";
 import { OrgAuthShell } from "@/components/auth/OrgAuthShell";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
@@ -211,9 +212,8 @@ export default function Login() {
             <Label htmlFor="password" className="text-sm font-medium text-gray-700">
               Password
             </Label>
-            <Input
+            <PasswordInput
               id="password"
-              type="password"
               autoComplete="current-password"
               placeholder="Enter your password"
               value={password}
@@ -270,9 +270,8 @@ export default function Login() {
             <Label htmlFor="new-password" className="text-sm font-medium text-gray-700">
               New password
             </Label>
-            <Input
+            <PasswordInput
               id="new-password"
-              type="password"
               autoComplete="new-password"
               placeholder="At least 8 characters"
               value={password}
@@ -286,9 +285,8 @@ export default function Login() {
             <Label htmlFor="confirm-new-password" className="text-sm font-medium text-gray-700">
               Confirm password
             </Label>
-            <Input
+            <PasswordInput
               id="confirm-new-password"
-              type="password"
               autoComplete="new-password"
               placeholder="Re-enter new password"
               value={confirmPassword}

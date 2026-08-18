@@ -2,11 +2,13 @@ import { useEffect, useState, type ReactNode } from "react";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { hasPermission } from "@/lib/permissions";
+import { canManageNoticePeriod } from "@/lib/leave-policy";
 import { departmentSelectOptions, departmentSelectScopeForRole } from "@/lib/department-options";
 import { Loader2, Pencil, Phone, FileUp, Download, Trash2, Paperclip } from "lucide-react";
 import { motion } from "framer-motion";
 import { formatWorkZoneDate, formatWorkZoneDateTime, workZoneDateKey } from "@/lib/timezone";
 import { downloadFileFromBase64, readFileAsBase64 } from "@/lib/task-files";
+import { Checkbox } from "@/components/ui/checkbox";
 
 export const SEX_OPTIONS = [
   { value: "male", label: "Male" },
@@ -47,6 +49,7 @@ type PersonalForm = {
   headOfDepartmentUserIds: number[];
   privateNotes: string;
   employmentType: "full_time" | "intern";
+  onNoticePeriod: boolean;
 };
 
 const EMPTY_FORM: PersonalForm = {
@@ -70,6 +73,7 @@ const EMPTY_FORM: PersonalForm = {
   headOfDepartmentUserIds: [],
   privateNotes: "",
   employmentType: "full_time",
+  onNoticePeriod: false,
 };
 
 function toDateInputValue(value: Date | string | null | undefined) {
@@ -113,6 +117,7 @@ function formFromPersonalData(data: {
   headOfDepartmentUserIds?: number[];
   privateNotes?: string | null;
   employmentType?: "full_time" | "intern" | string | null;
+  onNoticePeriod?: boolean | null;
 }): PersonalForm {
   return {
     firstName: data.firstName ?? "",
@@ -135,6 +140,7 @@ function formFromPersonalData(data: {
     headOfDepartmentUserIds: data.headOfDepartmentUserIds ?? [],
     privateNotes: data.privateNotes ?? "",
     employmentType: data.employmentType === "intern" ? "intern" : "full_time",
+    onNoticePeriod: Boolean(data.onNoticePeriod),
   };
 }
 
@@ -207,6 +213,11 @@ export function PersonalInformationPanel({
   const isSelf = userId == null || userId === user?.id;
   const canManageHeadOfDepartment = hasPermission(user, "profile.head_of_department");
   const canEditEmploymentType = hasPermission(user, "employees.manage");
+  const canEditNoticePeriod = canManageNoticePeriod(user);
+  /** Project managers without employees.manage may only change the notice-period flag. */
+  const noticeOnlyEditor = Boolean(
+    !isSelf && canEditNoticePeriod && !hasPermission(user, "employees.manage"),
+  );
 
   const selfQuery = trpc.auth.getPersonalInfo.useQuery(undefined, { enabled: isSelf });
   const adminQuery = trpc.user.getPersonalInfo.useQuery(
@@ -331,6 +342,7 @@ export function PersonalInformationPanel({
         ? { headOfDepartmentUserIds: form.headOfDepartmentUserIds }
         : {}),
       ...(canEditEmploymentType ? { employmentType: form.employmentType } : {}),
+      ...(canEditNoticePeriod ? { onNoticePeriod: form.onNoticePeriod } : {}),
       ...(isSelf ? { privateNotes: form.privateNotes.trim() || null } : {}),
     };
 
@@ -340,6 +352,10 @@ export function PersonalInformationPanel({
     }
 
     if (userId != null) {
+      if (noticeOnlyEditor) {
+        adminUpdateMutation.mutate({ id: userId, onNoticePeriod: form.onNoticePeriod });
+        return;
+      }
       adminUpdateMutation.mutate({ id: userId, ...payload });
     }
   };
@@ -419,6 +435,13 @@ export function PersonalInformationPanel({
             value={data.employmentType === "intern" ? "Intern" : "Full-time"}
             className="border-b border-gray-100"
           />
+          {canEditNoticePeriod ? (
+            <FieldRow
+              label="Notice period"
+              value={data.onNoticePeriod ? "On notice period" : "Not on notice"}
+              className="border-b border-gray-100"
+            />
+          ) : null}
           <FieldRow label="Sex" value={sexLabel(data.sex)} className="border-b border-gray-100" />
           <FieldRow
             label="Mobile phone"
@@ -584,6 +607,28 @@ export function PersonalInformationPanel({
               </p>
             )}
           </FormField>
+          {canEditNoticePeriod ? (
+            <div className="md:col-span-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <Checkbox
+                  checked={form.onNoticePeriod}
+                  onCheckedChange={(checked) =>
+                    setForm((prev) => ({ ...prev, onNoticePeriod: checked === true }))
+                  }
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-[#1F2937]">
+                    Employee is on notice period
+                  </span>
+                  <span className="block text-xs text-gray-500 mt-0.5">
+                    While enabled, paid leave is not provided for the current month (and later months
+                    until this is turned off). Visible to admin, HR, and project managers.
+                  </span>
+                </span>
+              </label>
+            </div>
+          ) : null}
           <FormField label="Sex">
             <select
               value={form.sex}

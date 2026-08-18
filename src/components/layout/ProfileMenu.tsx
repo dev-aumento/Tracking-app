@@ -11,6 +11,8 @@ import { CrossDayClockOutDialog } from "@/components/time-tracking/CrossDayClock
 import { useClockOutAction } from "@/hooks/useClockOutAction";
 import { formatElapsedHMS, roleConfig } from "@/lib/utils";
 import { isAdminOrManagement } from "@/lib/leave-policy";
+import { runClockInWithLocation } from "@/lib/clock-in-with-location";
+import { toast } from "sonner";
 import {
   ChevronRight,
   Loader2,
@@ -84,6 +86,7 @@ export function ProfileMenu() {
       invalidateTime();
       refetchSession();
     },
+    onError: (err) => toast.error(err.message || "Could not clock in"),
   });
 
   const pauseMutation = trpc.timeEntry.pauseSession.useMutation({
@@ -250,7 +253,15 @@ export function ProfileMenu() {
               <button
                 type="button"
                 disabled={isBusy}
-                onClick={() => clockInMutation.mutate()}
+                onClick={() => {
+                  void runClockInWithLocation(
+                    (input) => clockInMutation.mutateAsync(input),
+                    {
+                      isLocationRequired: async () =>
+                        (await utils.location.clockInPolicy.fetch()).required,
+                    },
+                  );
+                }}
                 className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg bg-[#2563EB] text-white text-sm font-medium hover:bg-[#1D4ED8] transition-colors disabled:opacity-50"
               >
                 {clockInMutation.isPending ? (

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createRouter, adminQuery } from "./middleware";
+import { createRouter, authedQuery } from "./middleware";
 import { ensureSchema } from "./lib/migrate";
 import {
   getCollection,
@@ -98,7 +98,7 @@ function toClient(doc: CustomerDoc) {
 }
 
 export const customerRouter = createRouter({
-  list: adminQuery.query(async ({ ctx }) => {
+  list: authedQuery.query(async ({ ctx }) => {
     assertPermission(ctx.user, "customers.manage");
     if (useMock()) {
       return mockCustomers
@@ -115,7 +115,7 @@ export const customerRouter = createRouter({
     return docs.map(toClient);
   }),
 
-  get: adminQuery
+  get: authedQuery
     .input(z.object({ id: z.number() }))
     .query(async ({ ctx, input }) => {
       assertPermission(ctx.user, "customers.manage");
@@ -132,7 +132,7 @@ export const customerRouter = createRouter({
       return toClient(doc);
     }),
 
-  create: adminQuery
+  create: authedQuery
     .input(customerInputSchema)
     .mutation(async ({ ctx, input }) => {
       assertPermission(ctx.user, "customers.manage");
@@ -163,7 +163,7 @@ export const customerRouter = createRouter({
       return toClient(doc);
     }),
 
-  update: adminQuery
+  update: authedQuery
     .input(customerInputSchema.extend({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       assertPermission(ctx.user, "customers.manage");
@@ -199,7 +199,7 @@ export const customerRouter = createRouter({
       return toClient(updated!);
     }),
 
-  delete: adminQuery
+  delete: authedQuery
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       assertPermission(ctx.user, "customers.manage");
@@ -240,7 +240,7 @@ export const customerRouter = createRouter({
     }),
 
   /** One-time import of browser-local legacy records into the org database. */
-  importLegacy: adminQuery
+  importLegacy: authedQuery
     .input(
       z.object({
         customers: z.array(

@@ -8,7 +8,7 @@ export type CachedAuthUser = {
   name: string | null;
   email: string | null;
   avatar: string | null;
-  role: "admin" | "manager" | "employee" | "hr" | "client";
+  role: "admin" | "manager" | "employee" | "hr" | "client" | "finance";
   status: "active" | "inactive" | "suspended";
   department: string | null;
   position: string | null;

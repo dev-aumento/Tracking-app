@@ -2,8 +2,9 @@ import { Routes, Route, Navigate, Outlet, useParams, useSearchParams } from 'rea
 import { AppLayout } from './components/layout/AppLayout'
 import { useAuth } from './hooks/useAuth'
 import { AUTH_DISABLED, LOGIN_PATH } from './const'
-import { canAccessRoute, getDefaultHomePath, hasAnyPermission, hasPermission } from './lib/permissions'
-import { isHrUser } from './lib/leave-policy'
+import { canAccessRoute, getDefaultHomePath, getLoginPathForUser, hasAnyPermission, hasPermission } from './lib/permissions'
+import { isFinanceRoleOnly, isHrUser } from './lib/leave-policy'
+import { readAuthCache } from './lib/auth-cache'
 import {
   buildAllTasksViewPath,
   buildMyTasksViewPath,
@@ -28,12 +29,41 @@ import AdminAllTasks from './pages/admin/AllTasks'
 import AdminPermissions from './pages/admin/Permissions'
 import AdminInvoices from './pages/admin/Invoices'
 import AdminCustomers from './pages/admin/Customers'
+import BankAccountsPage from './pages/finance/BankAccountsPage'
+import ChartOfAccountsPage from './pages/finance/ChartOfAccountsPage'
+import EstimatesPage from './pages/finance/EstimatesPage'
+import PaymentsPage from './pages/finance/PaymentsPage'
+import ExpensesPage from './pages/finance/ExpensesPage'
+import ContractsPage from './pages/finance/ContractsPage'
+import ReceivablePage from './pages/finance/ReceivablePage'
+import PayablePage from './pages/finance/PayablePage'
+import TaxCompliancePage from './pages/finance/TaxCompliancePage'
+import ReportsHubPage from './pages/finance/ReportsHubPage'
 import Leaves from './pages/Leaves'
 import LeaveManagement from './pages/LeaveManagement'
 import AttendanceManagement from './pages/AttendanceManagement'
+import Locations from './pages/Locations'
+import OrgQrCode from './pages/OrgQrCode'
 import RecentEmployees from './pages/RecentEmployees'
 import InviteAccept from './pages/InviteAccept'
 import Login from './pages/Login'
+import FinanceLogin from './pages/FinanceLogin'
+import MobileMenu from './pages/mobile/MobileMenu'
+import MobileWorkHub from './pages/mobile/MobileWorkHub'
+import MobileWhatsNew from './pages/mobile/MobileWhatsNew'
+import { MobileFeed } from './components/mobile/MobileFeed'
+import { isNativeApp } from './lib/platform'
+
+function MobileWorkRoute() {
+  const { user, isLoading } = useAuth()
+  if (isLoading) return <LoadingScreen />
+  const allowed =
+    canAccessRoute(user, '/tasks') ||
+    canAccessRoute(user, '/admin/tasks') ||
+    canAccessRoute(user, '/projects')
+  if (!allowed) return <Navigate to="/m/menu" replace />
+  return <MobileWorkHub />
+}
 
 function LoadingScreen() {
   return (
@@ -51,7 +81,7 @@ function RequireAuth() {
 
   if (isLoading) return <LoadingScreen />
   if (!AUTH_DISABLED && !user) {
-    return <Navigate to={LOGIN_PATH} replace />
+    return <Navigate to={getLoginPathForUser(readAuthCache()) || LOGIN_PATH} replace />
   }
 
   return <Outlet />
@@ -89,7 +119,13 @@ function ProtectedRoute({
     return <Navigate to={getDefaultHomePath(user)} replace />
   }
 
-  if (requireManager && (user?.role === 'employee' || user?.role === 'hr' || user?.role === 'client')) {
+  if (
+    requireManager &&
+    (user?.role === 'employee' ||
+      user?.role === 'hr' ||
+      user?.role === 'client' ||
+      user?.role === 'finance')
+  ) {
     return <Navigate to={getDefaultHomePath(user)} replace />
   }
 
@@ -125,7 +161,9 @@ function SharedTaskLinkRedirect() {
 
   if (isLoading) return <LoadingScreen />
   if (!taskId) return <Navigate to="/tasks" replace />
-  if (isHrUser(user)) return <Navigate to={getDefaultHomePath(user)} replace />
+  if (isHrUser(user) || isFinanceRoleOnly(user)) {
+    return <Navigate to={getDefaultHomePath(user)} replace />
+  }
 
   const canViewAll =
     user?.role === 'admin' || hasPermission(user, 'tasks.view_all')
@@ -153,13 +191,28 @@ export default function App() {
           </GuestOnly>
         }
       />
+      <Route
+        path="/finance/login"
+        element={
+          <GuestOnly>
+            <FinanceLogin />
+          </GuestOnly>
+        }
+      />
       <Route path="/invite/:token" element={<InviteAccept />} />
       <Route path="*" element={<NotFound />} />
 
       <Route element={<RequireAuth />}>
         <Route element={<AppLayout />}>
           <Route path="/" element={
-            <PermissionRoute path="/"><Dashboard /></PermissionRoute>
+            <PermissionRoute path="/">
+              <Dashboard />
+            </PermissionRoute>
+          } />
+          <Route path="/feed" element={
+            <PermissionRoute path="/">
+              {isNativeApp() ? <MobileFeed /> : <Dashboard />}
+            </PermissionRoute>
           } />
           <Route path="/tasks" element={
             <PermissionRoute path="/tasks"><Tasks /></PermissionRoute>
@@ -178,7 +231,9 @@ export default function App() {
           <Route path="/time-tracking" element={
             <PermissionRoute path="/time-tracking"><TimeTracking /></PermissionRoute>
           } />
-          <Route path="/inbox" element={<Navigate to="/" replace />} />
+          <Route path="/inbox" element={
+            <Navigate to={isNativeApp() ? "/" : "/"} replace />
+          } />
           <Route path="/projects" element={
             <PermissionRoute path="/projects"><Projects /></PermissionRoute>
           } />
@@ -189,6 +244,15 @@ export default function App() {
             <PermissionRoute path="/projects"><ProjectDetail /></PermissionRoute>
           } />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/m/menu" element={<MobileMenu />} />
+          <Route path="/m/whats-new" element={<MobileWhatsNew />} />
+          <Route path="/m/work" element={<MobileWorkRoute />} />
+          <Route
+            path="/m"
+            element={
+              <Navigate to={isNativeApp() ? "/" : "/"} replace />
+            }
+          />
           <Route path="/admin/hours" element={<Navigate to="/time-tracking" replace />} />
           <Route path="/working-hours" element={<Navigate to="/time-tracking" replace />} />
           <Route path="/analytics" element={
@@ -204,6 +268,8 @@ export default function App() {
           <Route path="/leave" element={<Navigate to="/leaves" replace />} />
           <Route path="/leave-management" element={<LeaveManagement />} />
           <Route path="/attendance-management" element={<AttendanceManagement />} />
+          <Route path="/locations" element={<Locations />} />
+          <Route path="/qr-code" element={<OrgQrCode />} />
           <Route path="/recent-employees" element={<RecentEmployees />} />
 
           {/* Admin Routes */}
@@ -265,6 +331,71 @@ export default function App() {
           <Route path="/admin/customers/:customerId/edit" element={
             <PermissionRoute path="/admin/customers">
               <AdminCustomers />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/banks" element={
+            <PermissionRoute path="/finance/banks">
+              <BankAccountsPage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/chart-of-accounts" element={
+            <PermissionRoute path="/finance/chart-of-accounts">
+              <ChartOfAccountsPage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/estimates" element={
+            <PermissionRoute path="/finance/estimates">
+              <EstimatesPage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/payments" element={
+            <PermissionRoute path="/finance/payments">
+              <PaymentsPage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/expenses" element={
+            <PermissionRoute path="/finance/expenses">
+              <ExpensesPage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/contracts" element={
+            <PermissionRoute path="/finance/contracts">
+              <ContractsPage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/receivable" element={
+            <PermissionRoute path="/finance/receivable">
+              <ReceivablePage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/payable" element={
+            <PermissionRoute path="/finance/payable">
+              <PayablePage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/tax" element={
+            <PermissionRoute path="/finance/tax">
+              <TaxCompliancePage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/reports" element={
+            <PermissionRoute path="/finance/reports">
+              <ReportsHubPage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/profit-loss" element={
+            <PermissionRoute path="/finance/profit-loss">
+              <ReportsHubPage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/cash-flow" element={
+            <PermissionRoute path="/finance/cash-flow">
+              <ReportsHubPage />
+            </PermissionRoute>
+          } />
+          <Route path="/finance/balance-sheet" element={
+            <PermissionRoute path="/finance/balance-sheet">
+              <ReportsHubPage />
             </PermissionRoute>
           } />
         </Route>

@@ -1,8 +1,7 @@
-import type { ClipboardEvent, ReactNode } from "react";
+import { memo, type ClipboardEvent, type ReactNode } from "react";
 import { parseCommentMessage, type MentionUser } from "@/lib/task-comment-mentions";
 import {
   dedupeMediaInRichBody,
-  getCommentClipboardPayload,
   htmlToFormattedPlainText,
   parseStoredCommentMessage,
   sanitizeRichCommentHtml,
@@ -60,6 +59,32 @@ function groupSegmentsForDisplay(segments: BodySegment[]): RenderBlock[] {
 
 function renderPlainMentions(message: string, mentionUsers: MentionUser[]) {
   const parts = parseCommentMessage(message, mentionUsers);
+  const mentionParts = parts.filter(
+    (part): part is Extract<typeof part, { type: "mention" }> => part.type === "mention",
+  );
+
+  // Mention-only prefix (one or more @people): always show as a horizontal chip row.
+  const onlyMentionsAndWhitespace = parts.every(
+    (part) =>
+      part.type === "mention"
+      || (part.type === "text" && !part.value.replace(/\s+/g, "").length),
+  );
+
+  if (onlyMentionsAndWhitespace && mentionParts.length > 0) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        {mentionParts.map((part, index) => (
+          <span
+            key={`mention-${part.userId}-${index}`}
+            className="inline-flex font-medium text-[#2563EB]"
+          >
+            {part.name}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
   const nodes: ReactNode[] = [];
 
   for (const [index, part] of parts.entries()) {
@@ -67,7 +92,7 @@ function renderPlainMentions(message: string, mentionUsers: MentionUser[]) {
       nodes.push(
         <span
           key={`mention-${index}`}
-          className="block font-medium text-[#2563EB]"
+          className="inline font-medium text-[#2563EB]"
         >
           {part.name}
         </span>,
@@ -76,9 +101,17 @@ function renderPlainMentions(message: string, mentionUsers: MentionUser[]) {
     }
 
     if (!part.value) continue;
+    // Don't force line breaks between mention tokens from older comments.
+    const normalized = part.value.replace(/^\n+|\n+$/g, (match) =>
+      match.length > 1 ? "\n" : "",
+    );
+    if (!normalized.replace(/\s+/g, "").length && mentionParts.length > 0) {
+      nodes.push(<span key={`gap-${index}`}>{" "}</span>);
+      continue;
+    }
     nodes.push(
       <span key={`text-${index}`} className="whitespace-pre-wrap break-words">
-        {part.value}
+        {normalized}
       </span>,
     );
   }
@@ -86,30 +119,44 @@ function renderPlainMentions(message: string, mentionUsers: MentionUser[]) {
   return nodes;
 }
 
-function handleCommentCopy(event: ClipboardEvent<HTMLDivElement>, message: string) {
+/**
+ * Copy only the user's selected range.
+ * Prefer the browser selection string; optionally enrich with formatted plain text
+ * from the selected HTML when that conversion succeeds.
+ */
+function handleCommentCopy(event: ClipboardEvent<HTMLDivElement>) {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed) return;
 
-  let html = "";
-  let text = "";
+  const currentTarget = event.currentTarget;
+  if (!selection.anchorNode || !currentTarget.contains(selection.anchorNode)) {
+    return;
+  }
 
+  const selectedText = selection.toString();
+  if (!selectedText) return;
+
+  let html = "";
+  let formatted = "";
   try {
     const range = selection.getRangeAt(0);
     const container = document.createElement("div");
     container.appendChild(range.cloneContents());
     html = sanitizeRichCommentHtml(container.innerHTML);
-    text = htmlToFormattedPlainText(html);
+    formatted = html ? htmlToFormattedPlainText(html) : "";
   } catch {
-    const payload = getCommentClipboardPayload(message);
-    html = payload.html;
-    text = payload.text;
+    // Fall through to native copy of the selection.
+    return;
   }
 
-  if (!html && !text) return;
+  const text = formatted.trim() ? formatted : selectedText;
+  if (!text) return;
 
   event.preventDefault();
-  event.clipboardData.setData("text/html", html || `<div>${text}</div>`);
   event.clipboardData.setData("text/plain", text);
+  if (html.trim()) {
+    event.clipboardData.setData("text/html", html);
+  }
 }
 
 type CommentRichContentProps = {
@@ -120,7 +167,7 @@ type CommentRichContentProps = {
   inlineMedia?: boolean;
 };
 
-export function CommentRichContent({
+function CommentRichContentInner({
   message,
   mentionUsers,
   className,
@@ -130,11 +177,8 @@ export function CommentRichContent({
   if (!parsed.isRich) {
     return (
       <div
-        className={cn(
-          "break-words select-text [-webkit-user-select:text] [-webkit-touch-callout:default]",
-          className,
-        )}
-        onCopy={(event) => handleCommentCopy(event, message)}
+        className={cn("min-w-0 max-w-full break-words select-text", className)}
+        onCopy={handleCommentCopy}
       >
         {renderPlainMentions(message, mentionUsers)}
       </div>
@@ -147,24 +191,23 @@ export function CommentRichContent({
 
   return (
     <div
-      className={cn(
-        "break-words select-text [-webkit-user-select:text] [-webkit-touch-callout:default]",
-        className,
-      )}
-      onCopy={(event) => handleCommentCopy(event, message)}
+      className={cn("min-w-0 max-w-full break-words select-text", className)}
+      onCopy={handleCommentCopy}
     >
       {parsed.mentionPrefix ? (
-        <div className="mb-2">{renderPlainMentions(parsed.mentionPrefix, mentionUsers)}</div>
+        <div className="mb-2">
+          {renderPlainMentions(parsed.mentionPrefix, mentionUsers)}
+        </div>
       ) : null}
 
       {blocks.length > 0 ? (
-        <div className="rich-comment-content space-y-3 text-sm text-gray-800 select-text">
+        <div className="rich-comment-content min-w-0 max-w-full space-y-3 text-sm text-gray-800">
           {blocks.map((block, index) => {
             if (block.type === "html") {
               return (
                 <div
                   key={`html-${index}`}
-                  className="select-text [&_a]:text-[#2563EB] [&_a]:underline [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-0.5"
+                  className="rich-comment-html min-w-0 max-w-full overflow-x-auto [&_a]:text-[#2563EB] [&_a]:underline [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-0.5"
                   dangerouslySetInnerHTML={{
                     __html: sanitizeRichCommentHtml(block.html),
                   }}
@@ -191,3 +234,5 @@ export function CommentRichContent({
     </div>
   );
 }
+
+export const CommentRichContent = memo(CommentRichContentInner);

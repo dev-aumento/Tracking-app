@@ -12,6 +12,7 @@ import { motion } from "framer-motion";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogDescription,
@@ -24,6 +25,7 @@ import { Invite } from "@contracts/constants";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { hasPermission } from "@/lib/permissions";
+import { isNativeApp } from "@/lib/platform";
 import { EmployeeDetailDialog } from "@/components/admin/EmployeeDetailDialog";
 import { departmentSelectOptions } from "@/lib/department-options";
 import { FilterSelect } from "@/components/shared/FilterSelect";
@@ -31,6 +33,7 @@ import {
   isInProbationPeriod,
   resolveEmploymentType,
   paidLeaveLockPeriodLabel,
+  canManageNoticePeriod,
 } from "@/lib/leave-policy";
 
 const EMPLOYEE_ROW_GRID =
@@ -48,17 +51,25 @@ type EmployeeRow = {
   dateOfJoining?: Date | string | null;
   employmentType?: string | null;
   position?: string | null;
+  onNoticePeriod?: boolean | null;
 };
 
-export default function AdminEmployees() {
+export default function AdminEmployees({
+  embedded = false,
+}: {
+  embedded?: boolean;
+}) {
   const { user } = useAuth();
+  const native = isNativeApp();
   const canManageEmployees = hasPermission(user, "employees.manage");
   const canManagePermissions = hasPermission(user, "permissions.manage");
+  const canViewNoticePeriod = canManageNoticePeriod(user);
+  const canOpenEmployeeDetail = canManageEmployees || canViewNoticePeriod;
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [editingUser, setEditingUser] = useState<number | null>(null);
-  const [editRole, setEditRole] = useState<"admin" | "manager" | "employee" | "hr" | "client">("employee");
+  const [editRole, setEditRole] = useState<"admin" | "manager" | "employee" | "hr" | "client" | "finance">("employee");
   const [editDepartment, setEditDepartment] = useState("");
   const [savingEditId, setSavingEditId] = useState<number | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -152,7 +163,7 @@ export default function AdminEmployees() {
       return;
     }
     setEditingUser(target.id);
-    setEditRole(target.role as "admin" | "manager" | "employee" | "hr" | "client");
+    setEditRole(target.role as "admin" | "manager" | "employee" | "hr" | "client" | "finance");
     setEditDepartment(target.department ?? "");
   }
 
@@ -279,18 +290,28 @@ export default function AdminEmployees() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-[#1F2937]">Employees</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
+      <div className="flex items-center justify-between gap-3">
+        {!embedded ? (
+          <div>
+            <h1 className="text-2xl font-bold text-[#1F2937]">Employees</h1>
+            <p className="text-sm text-gray-500 mt-0.5">
+              {totalLabel} total employees
+              {!native
+                ? canReorder
+                  ? " · drag rows to reorder"
+                  : " · clear filters to reorder"
+                : null}
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">
             {totalLabel} total employees
-            {canReorder ? " · drag rows to reorder" : " · clear filters to reorder"}
           </p>
-        </div>
+        )}
         {canManageEmployees ? (
           <Button
             onClick={handleOpenInvite}
-            className="bg-[#2563EB] hover:bg-[#1D4ED8] gap-2"
+            className="bg-[#2563EB] hover:bg-[#1D4ED8] gap-2 shrink-0"
           >
             <UserPlus size={16} />
             Invite Employee
@@ -344,8 +365,13 @@ export default function AdminEmployees() {
       )}
 
       {/* Filters */}
-      <div className="bg-white border border-gray-200 rounded-xl p-4 flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[200px]">
+      <div
+        className={cn(
+          "bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-3",
+          native ? "flex-col items-stretch" : "flex-wrap",
+        )}
+      >
+        <div className={cn("relative flex-1", native ? "w-full min-w-0" : "min-w-[200px]")}>
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
           <input
             type="text"
@@ -355,39 +381,248 @@ export default function AdminEmployees() {
             className="w-full h-9 pl-9 pr-4 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20"
           />
         </div>
-        <FilterSelect
-          value={roleFilter}
-          onChange={setRoleFilter}
-          options={[
-            { value: "", label: "All Roles" },
-            { value: "admin", label: "Admin" },
-            { value: "manager", label: "Manager" },
-            { value: "employee", label: "Employee" },
-            { value: "hr", label: "HR" },
-          ]}
-          aria-label="Filter by role"
-          triggerClassName="h-9 bg-gray-50"
-        />
-        <FilterSelect
-          value={statusFilter}
-          onChange={setStatusFilter}
-          options={[
-            { value: "", label: "All Statuses" },
-            { value: "active", label: "Active" },
-            { value: "inactive", label: "Inactive" },
-            { value: "suspended", label: "Suspended" },
-          ]}
-          aria-label="Filter by status"
-          triggerClassName="h-9 bg-gray-50"
-        />
-        {hasFilters && (
-          <button onClick={clearFilters} className="h-9 px-3 text-sm text-gray-500 hover:text-[#2563EB] flex items-center gap-1">
-            <X size={14} /> Clear
-          </button>
-        )}
+        <div className={cn("flex gap-2", native && "w-full flex-wrap")}>
+          <FilterSelect
+            value={roleFilter}
+            onChange={setRoleFilter}
+            options={[
+              { value: "", label: "All Roles" },
+              { value: "admin", label: "Admin" },
+              { value: "manager", label: "Manager" },
+              { value: "employee", label: "Employee" },
+              { value: "hr", label: "HR" },
+              { value: "finance", label: "Account Manager" },
+            ]}
+            aria-label="Filter by role"
+            triggerClassName={cn("h-9 bg-gray-50", native && "flex-1 min-w-0")}
+          />
+          <FilterSelect
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={[
+              { value: "", label: "All Statuses" },
+              { value: "active", label: "Active" },
+              { value: "inactive", label: "Inactive" },
+              { value: "suspended", label: "Suspended" },
+            ]}
+            aria-label="Filter by status"
+            triggerClassName={cn("h-9 bg-gray-50", native && "flex-1 min-w-0")}
+          />
+          {hasFilters && (
+            <button onClick={clearFilters} className="h-9 px-3 text-sm text-gray-500 hover:text-[#2563EB] flex items-center gap-1 shrink-0">
+              <X size={14} /> Clear
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Employee Table */}
+      {/* Employee list — native: stacked cards (no horizontal scroll); web: table */}
+      {native ? (
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          {isLoading && (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 size={24} className="animate-spin text-gray-400" />
+            </div>
+          )}
+          <ul className="divide-y divide-gray-100">
+            {orderedUsers.map((u) => (
+              <li key={u.id} className="px-4 py-3.5">
+                <div className="flex items-start gap-3 min-w-0">
+                  <button
+                    type="button"
+                    disabled={!canOpenEmployeeDetail}
+                    onClick={() => {
+                      if (!canOpenEmployeeDetail) return;
+                      setDetailUserId(u.id);
+                    }}
+                    className={cn(
+                      "flex items-start gap-3 min-w-0 flex-1 text-left",
+                      canOpenEmployeeDetail ? "cursor-pointer" : "cursor-default",
+                    )}
+                  >
+                    <UserAvatar name={u.name} avatar={u.avatar} size={40} />
+                    <div className="min-w-0 flex-1">
+                      <div
+                        className={cn(
+                          "text-sm font-semibold truncate capitalize",
+                          canOpenEmployeeDetail ? "text-[#2563EB]" : "text-[#1F2937]",
+                        )}
+                      >
+                        {u.name || "Unknown"}
+                      </div>
+                      <div className="text-xs text-gray-400 truncate">{u.email || "No email"}</div>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                        {editingUser === u.id && canManageEmployees ? (
+                          <>
+                            <select
+                              value={editDepartment}
+                              onChange={(e) => setEditDepartment(e.target.value)}
+                              className="h-8 w-full max-w-full px-2 border border-gray-200 rounded-lg text-xs bg-white"
+                              aria-label="Edit department"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <option value="">No department</option>
+                              {departmentSelectOptions(u.department, "all").map((dept) => (
+                                <option key={dept} value={dept}>
+                                  {dept}
+                                </option>
+                              ))}
+                            </select>
+                            <select
+                              value={editRole}
+                              onChange={(e) => {
+                                const next = e.target.value as
+                                  | "admin"
+                                  | "manager"
+                                  | "employee"
+                                  | "hr"
+                                  | "client"
+                                  | "finance";
+                                setEditRole(next);
+                                if (next === "finance" && !editDepartment.trim()) {
+                                  setEditDepartment("Finance");
+                                }
+                              }}
+                              className="h-8 w-full max-w-full px-2 border border-gray-200 rounded-lg text-xs bg-white"
+                              aria-label="Edit role"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <option value="admin">Admin</option>
+                              <option value="manager">Manager</option>
+                              <option value="employee">Employee</option>
+                              <option value="hr">HR</option>
+                              <option value="client">Client</option>
+                              <option value="finance">Account Manager</option>
+                            </select>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-xs text-gray-500 truncate max-w-full">
+                              {u.department || "—"}
+                            </span>
+                            <RoleBadge
+                              role={u.role as "admin" | "manager" | "employee" | "hr" | "client" | "finance"}
+                            />
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium capitalize ${
+                                u.status === "active"
+                                  ? "bg-emerald-50 text-emerald-600"
+                                  : u.status === "inactive"
+                                    ? "bg-gray-100 text-gray-500"
+                                    : "bg-blue-50 text-blue-600"
+                              }`}
+                            >
+                              {u.status}
+                            </span>
+                            {canViewNoticePeriod &&
+                            isInProbationPeriod(
+                              u.dateOfJoining,
+                              new Date(),
+                              resolveEmploymentType(u),
+                            ) ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700">
+                                {resolveEmploymentType(u) === "intern"
+                                  ? "Internship / probation"
+                                  : "In probation"}
+                              </span>
+                            ) : null}
+                            {canViewNoticePeriod && u.onNoticePeriod ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-50 text-rose-700">
+                                On notice period
+                              </span>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                </div>
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5 pl-[52px]">
+                  {editingUser === u.id && canManageEmployees ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void saveEmployeeEdits(u)}
+                        disabled={savingEditId === u.id}
+                        className="h-8 px-3 bg-[#2563EB] text-white rounded-lg text-xs font-medium hover:bg-[#1D4ED8] disabled:opacity-50 inline-flex items-center gap-1"
+                      >
+                        {savingEditId === u.id ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : null}
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingUser(null)}
+                        disabled={savingEditId === u.id}
+                        className="h-8 px-2 text-xs text-gray-500"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {u.role !== "admin" && canManagePermissions ? (
+                        <button
+                          type="button"
+                          onClick={() => openAccessDialog(u)}
+                          className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-gray-50 text-xs text-[#2563EB]"
+                        >
+                          <KeyRound size={14} /> Access
+                        </button>
+                      ) : null}
+                      {canManageEmployees ? (
+                        <button
+                          type="button"
+                          onClick={() => startEditing(u)}
+                          className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-gray-50 text-xs text-gray-600"
+                        >
+                          <Shield size={14} /> Edit
+                        </button>
+                      ) : null}
+                      {canManageEmployees ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextStatus = u.status === "active" ? "inactive" : "active";
+                            if (nextStatus === "inactive") {
+                              const confirmed = window.confirm(
+                                "Are you sure you want to deactivate this user?",
+                              );
+                              if (!confirmed) return;
+                            }
+                            updateStatusMutation.mutate({
+                              id: u.id,
+                              status: nextStatus,
+                            });
+                          }}
+                          className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-gray-50 text-xs text-gray-600"
+                        >
+                          {u.status === "active" ? (
+                            <>
+                              <UserX size={14} className="text-blue-400" /> Deactivate
+                            </>
+                          ) : (
+                            <>
+                              <UserCheck size={14} className="text-emerald-500" /> Activate
+                            </>
+                          )}
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+          {orderedUsers.length === 0 && !isLoading && (
+            <div className="py-12 text-center">
+              <Users size={36} className="mx-auto text-gray-200 mb-2" />
+              <p className="text-gray-500 text-sm">No employees found</p>
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto">
         <div className="min-w-[720px]">
           <div
@@ -440,26 +675,26 @@ export default function AdminEmployees() {
                 <div className="flex items-center gap-3 min-w-0">
                   <button
                     type="button"
-                    disabled={!canManageEmployees}
+                    disabled={!canOpenEmployeeDetail}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (!canManageEmployees) return;
+                      if (!canOpenEmployeeDetail) return;
                       setDetailUserId(u.id);
                     }}
                     className={cn(
                       "flex items-center gap-3 min-w-0 text-left rounded-lg -ml-1 pl-1 pr-2 py-1 transition-colors",
-                      canManageEmployees
+                      canOpenEmployeeDetail
                         ? "hover:bg-gray-100 cursor-pointer"
                         : "cursor-default",
                     )}
-                    title={canManageEmployees ? "View employee details" : undefined}
+                    title={canOpenEmployeeDetail ? "View employee details" : undefined}
                   >
                     <UserAvatar name={u.name} avatar={u.avatar} size={32} />
                     <div className="min-w-0">
                       <div
                         className={cn(
                           "text-sm font-medium truncate capitalize",
-                          canManageEmployees ? "text-[#2563EB]" : "text-[#1F2937]",
+                          canOpenEmployeeDetail ? "text-[#2563EB]" : "text-[#1F2937]",
                         )}
                       >
                         {u.name || "Unknown"}
@@ -491,9 +726,19 @@ export default function AdminEmployees() {
                   {editingUser === u.id && canManageEmployees ? (
                     <select
                       value={editRole}
-                      onChange={(e) =>
-                        setEditRole(e.target.value as "admin" | "manager" | "employee" | "hr" | "client")
-                      }
+                      onChange={(e) => {
+                        const next = e.target.value as
+                          | "admin"
+                          | "manager"
+                          | "employee"
+                          | "hr"
+                          | "client"
+                          | "finance";
+                        setEditRole(next);
+                        if (next === "finance" && !editDepartment.trim()) {
+                          setEditDepartment("Finance");
+                        }
+                      }}
                       className="h-8 w-full max-w-full px-2 border border-gray-200 rounded-lg text-xs bg-white"
                       aria-label="Edit role"
                     >
@@ -502,9 +747,10 @@ export default function AdminEmployees() {
                       <option value="employee">Employee</option>
                       <option value="hr">HR</option>
                       <option value="client">Client</option>
+                      <option value="finance">Account Manager</option>
                     </select>
                   ) : (
-                    <RoleBadge role={u.role as "admin" | "manager" | "employee" | "hr" | "client"} />
+                    <RoleBadge role={u.role as "admin" | "manager" | "employee" | "hr" | "client" | "finance"} />
                   )}
                 </div>
                 <div className="min-w-0 flex flex-wrap items-center gap-1.5">
@@ -519,7 +765,7 @@ export default function AdminEmployees() {
                   >
                     {u.status}
                   </span>
-                  {canManageEmployees &&
+                  {canViewNoticePeriod &&
                   isInProbationPeriod(
                     u.dateOfJoining,
                     new Date(),
@@ -532,6 +778,14 @@ export default function AdminEmployees() {
                       {resolveEmploymentType(u) === "intern"
                         ? "Internship / probation"
                         : "In probation"}
+                    </span>
+                  ) : null}
+                  {canViewNoticePeriod && u.onNoticePeriod ? (
+                    <span
+                      className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-50 text-rose-700"
+                      title="No paid leave for the current month while on notice period"
+                    >
+                      On notice period
                     </span>
                   ) : null}
                 </div>
@@ -618,6 +872,7 @@ export default function AdminEmployees() {
           )}
         </div>
       </div>
+      )}
 
       {/* Invite dialog */}
       <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
@@ -700,40 +955,44 @@ export default function AdminEmployees() {
 
       {/* Employee access dialog */}
       <Dialog open={!!accessUser} onOpenChange={(open) => !open && setAccessUser(null)}>
-        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Manage access</DialogTitle>
-            <DialogDescription>
-              Choose what <strong>{accessUser?.name || "this employee"}</strong> can access in the app.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-5 pt-2">
-            {PERMISSION_GROUPS.map((group) => (
-              <div key={group.id}>
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-                  {group.label}
-                </h3>
-                <div className="space-y-2">
-                  {group.permissions.map((perm) => (
-                    <label
-                      key={perm.key}
-                      className="flex items-start gap-3 cursor-pointer"
-                    >
-                      <Checkbox
-                        checked={accessPermissions.includes(perm.key)}
-                        onCheckedChange={() => toggleAccessPermission(perm.key)}
-                        className="mt-0.5"
-                      />
-                      <span className="text-sm text-gray-700">{perm.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ))}
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col gap-0 p-0">
+          <div className="shrink-0 border-b border-gray-100 px-6 pt-6 pb-4 pr-12">
+            <DialogHeader>
+              <DialogTitle>Manage access</DialogTitle>
+              <DialogDescription>
+                Choose what <strong>{accessUser?.name || "this employee"}</strong> can access in the app.
+              </DialogDescription>
+            </DialogHeader>
           </div>
 
-          <div className="flex gap-2 justify-end pt-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            <div className="space-y-5">
+              {PERMISSION_GROUPS.map((group) => (
+                <div key={group.id}>
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                    {group.label}
+                  </h3>
+                  <div className="space-y-2">
+                    {group.permissions.map((perm) => (
+                      <label
+                        key={perm.key}
+                        className="flex items-start gap-3 cursor-pointer"
+                      >
+                        <Checkbox
+                          checked={accessPermissions.includes(perm.key)}
+                          onCheckedChange={() => toggleAccessPermission(perm.key)}
+                          className="mt-0.5"
+                        />
+                        <span className="text-sm text-gray-700">{perm.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <DialogFooter className="shrink-0 border-t border-gray-100 bg-background px-6 py-4 sm:justify-end">
             <Button variant="outline" onClick={() => setAccessUser(null)}>
               Cancel
             </Button>
@@ -754,18 +1013,18 @@ export default function AdminEmployees() {
                 "Save access"
               )}
             </Button>
-          </div>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {canManageEmployees ? (
+      {canOpenEmployeeDetail ? (
         <EmployeeDetailDialog
           userId={detailUserId}
           open={detailUserId != null}
           onOpenChange={(open) => {
             if (!open) setDetailUserId(null);
           }}
-          canEdit
+          canEdit={canManageEmployees}
         />
       ) : null}
     </motion.div>

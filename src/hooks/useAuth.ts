@@ -5,7 +5,7 @@ import { trpc } from "@/providers/trpc";
 import { clearAuthCache, readAuthCache, writeAuthCache } from "@/lib/auth-cache";
 import { clearSessionToken, writeSessionToken } from "@/lib/session-token";
 import { mergeProfilePrefs } from "@/lib/profile-prefs";
-import { getDefaultHomePath } from "@/lib/permissions";
+import { getDefaultHomePath, getLoginPathForUser } from "@/lib/permissions";
 
 type AuthUser = {
   id: number;
@@ -13,7 +13,7 @@ type AuthUser = {
   name: string | null;
   email: string | null;
   avatar: string | null;
-  role: "admin" | "manager" | "employee" | "hr" | "client";
+  role: "admin" | "manager" | "employee" | "hr" | "client" | "finance";
   status: "active" | "inactive" | "suspended";
   department: string | null;
   position: string | null;
@@ -108,31 +108,33 @@ export function useAuth(_options?: UseAuthOptions) {
     },
   });
 
-  const logoutMutation = trpc.auth.logout.useMutation({
-    onSuccess: async () => {
-      clearSessionToken();
-      clearAuthCache();
-      utils.auth.me.setData(undefined, undefined);
+  const registerFinanceMutation = trpc.auth.registerFinance.useMutation({
+    onSuccess: async (result) => {
+      writeSessionToken(result.token);
+      writeAuthCache(result.user);
+      utils.auth.me.setData(undefined, result.user);
       await utils.invalidate();
-      navigate(LOGIN_PATH, { replace: true });
-    },
-    onError: async () => {
-      clearSessionToken();
-      clearAuthCache();
-      utils.auth.me.setData(undefined, undefined);
-      await utils.invalidate();
-      navigate(LOGIN_PATH, { replace: true });
+      navigate(getDefaultHomePath(result.user));
     },
   });
 
+  const logoutMutation = trpc.auth.logout.useMutation();
   const resetPasswordMutation = trpc.auth.resetPassword.useMutation();
 
   const login = useCallback(
-    (email: string, password: string) => {
+    (
+      email: string,
+      password: string,
+      options?: { portal?: "finance" },
+    ) => {
       if (AUTH_DISABLED) {
         return Promise.resolve({ user: DEV_USER });
       }
-      return loginMutation.mutateAsync({ email, password });
+      return loginMutation.mutateAsync({
+        email,
+        password,
+        portal: options?.portal,
+      });
     },
     [loginMutation],
   );
@@ -170,16 +172,23 @@ export function useAuth(_options?: UseAuthOptions) {
     [registerClientMutation],
   );
 
-  const logout = useCallback(() => {
-    if (AUTH_DISABLED) {
-      clearSessionToken();
-      clearAuthCache();
-      utils.auth.me.setData(undefined, undefined);
-      navigate(LOGIN_PATH, { replace: true });
-      return;
-    }
-    logoutMutation.mutate();
-  }, [logoutMutation, navigate, utils.auth.me]);
+  const registerFinance = useCallback(
+    (input: {
+      name: string;
+      email: string;
+      password: string;
+      organizationName: string;
+    }) => {
+      if (AUTH_DISABLED) {
+        return Promise.resolve({
+          user: { ...DEV_USER, role: "finance" as const },
+          organizationName: input.organizationName,
+        });
+      }
+      return registerFinanceMutation.mutateAsync(input);
+    },
+    [registerFinanceMutation],
+  );
 
   const resetPassword = useCallback(
     (email: string, newPassword: string) => {
@@ -206,6 +215,33 @@ export function useAuth(_options?: UseAuthOptions) {
     [baseUser],
   );
 
+  const logout = useCallback(() => {
+    const loginPath = getLoginPathForUser(effectiveUser ?? readAuthCache()) || LOGIN_PATH;
+    if (AUTH_DISABLED) {
+      clearSessionToken();
+      clearAuthCache();
+      utils.auth.me.setData(undefined, undefined);
+      navigate(loginPath, { replace: true });
+      return;
+    }
+    logoutMutation.mutate(undefined, {
+      onSuccess: async () => {
+        clearSessionToken();
+        clearAuthCache();
+        utils.auth.me.setData(undefined, undefined);
+        await utils.invalidate();
+        navigate(loginPath, { replace: true });
+      },
+      onError: async () => {
+        clearSessionToken();
+        clearAuthCache();
+        utils.auth.me.setData(undefined, undefined);
+        await utils.invalidate();
+        navigate(loginPath, { replace: true });
+      },
+    });
+  }, [effectiveUser, logoutMutation, navigate, utils]);
+
   return useMemo(
     () => ({
       user: effectiveUser,
@@ -213,13 +249,16 @@ export function useAuth(_options?: UseAuthOptions) {
       isLoading: !authResolved || logoutMutation.isPending,
       isLoggingIn: loginMutation.isPending,
       isRegistering:
-        registerAdminMutation.isPending || registerClientMutation.isPending,
+        registerAdminMutation.isPending ||
+        registerClientMutation.isPending ||
+        registerFinanceMutation.isPending,
       isResettingPassword: resetPasswordMutation.isPending,
       loginError: loginMutation.error,
       error,
       login,
       registerAdmin,
       registerClient,
+      registerFinance,
       resetPassword,
       logout,
       refresh: refetch,
@@ -231,12 +270,14 @@ export function useAuth(_options?: UseAuthOptions) {
       loginMutation.isPending,
       registerAdminMutation.isPending,
       registerClientMutation.isPending,
+      registerFinanceMutation.isPending,
       resetPasswordMutation.isPending,
       loginMutation.error,
       error,
       login,
       registerAdmin,
       registerClient,
+      registerFinance,
       resetPassword,
       logout,
       refetch,

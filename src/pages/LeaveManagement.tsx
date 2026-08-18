@@ -11,16 +11,22 @@ import {
   allocatePaidLeaveAcrossMonths,
   allowsHalfDayLeave,
   annualPaidLeaveEntitlement,
+  annualSickLeaveEntitlement,
+  annualWfhEntitlement,
   canManageLeaves,
   consumesPaidBalance,
   consumesSickBalance,
   durationHint,
   formatLeaveDays,
   isPaidLeaveMonthLocked,
+  isHalfDayLeave,
   isWorkFromHomeLeave,
+  firstOverlappingLeaveDate,
+  leaveAlreadyExistsForEmployeeMessage,
   leaveDateKeysInYear,
   leaveDayUnits,
   leaveDaysInMonth,
+  leaveTouchesMonth,
   leaveTypeLabel,
   paidLeaveMonthCapacities,
   remainingMonthlyPaidLeave,
@@ -34,6 +40,10 @@ import { UserSearchSelect } from "@/components/tasks/UserSearchSelect";
 import { formatWorkZoneDateKey, formatWorkZoneDateTime, workZoneDateParts } from "@/lib/timezone";
 import { holidayVisualForName } from "@/lib/holiday-icons";
 import { HolidayVisualBadge } from "@/components/leaves/HolidayVisualBadge";
+import {
+  approvedLeaveDateKeysForUser,
+  LeaveDatePickerField,
+} from "@/components/leaves/LeaveDatePickerField";
 import {
   Dialog,
   DialogContent,
@@ -57,6 +67,7 @@ import {
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { isNativeApp } from "@/lib/platform";
 
 type FilterTab = "pending" | "all" | "approved" | "rejected" | "cancelled" | "wfh";
 
@@ -97,6 +108,7 @@ type EmployeeColumn = {
   dateOfJoining?: Date | string | null;
   employmentType?: string | null;
   position?: string | null;
+  onNoticePeriod?: boolean;
 };
 
 const MONTH_LABELS = [
@@ -117,6 +129,7 @@ const MONTH_LABELS = [
 export default function LeaveManagement() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
+  const native = isNativeApp();
   const [filter, setFilter] = useState<FilterTab>("all");
   const [selectedRequest, setSelectedRequest] = useState<LeaveRequestRow | null>(null);
   const [cellLeaves, setCellLeaves] = useState<{
@@ -137,6 +150,9 @@ export default function LeaveManagement() {
   const [manualWfhOpen, setManualWfhOpen] = useState(false);
   const [wfhSearch, setWfhSearch] = useState("");
   const [expandedWfhIds, setExpandedWfhIds] = useState<Set<number>>(() => new Set());
+  const [expandedLeaveUsageIds, setExpandedLeaveUsageIds] = useState<Set<number>>(
+    () => new Set(),
+  );
   const allowed = canManageLeaves(user);
 
   const { data, isLoading } = trpc.leave.listPending.useQuery(undefined, {
@@ -166,12 +182,14 @@ export default function LeaveManagement() {
               ? "Leave cancelled"
               : "Leave set to pending";
       toast.success(label);
-      if (data.request) {
+      const updatedRequest = data.request;
+      if (updatedRequest != null) {
+        const saved = updatedRequest;
         setSelectedRequest((prev) =>
-          prev && prev.id === data.request.id
+          prev && prev.id === saved.id
             ? {
                 ...prev,
-                ...data.request,
+                ...saved,
                 employee: prev.employee,
               }
             : prev,
@@ -187,6 +205,32 @@ export default function LeaveManagement() {
     },
     onError: (err) => {
       toast.error(err.message || "Could not update leave request");
+    },
+  });
+
+  const updateDetailsMutation = trpc.leave.updateDetails.useMutation({
+    onSuccess: async (data) => {
+      toast.success("Leave details saved");
+      const updatedRequest = data.request;
+      if (updatedRequest != null) {
+        const saved = updatedRequest;
+        setSelectedRequest((prev) =>
+          prev && prev.id === saved.id
+            ? {
+                ...prev,
+                ...saved,
+                employee: prev.employee,
+              }
+            : prev,
+        );
+      }
+      await Promise.all([
+        utils.leave.listPending.invalidate(),
+        utils.leave.myRequests.invalidate(),
+      ]);
+    },
+    onError: (err) => {
+      toast.error(err.message || "Could not save leave details");
     },
   });
 
@@ -289,22 +333,32 @@ export default function LeaveManagement() {
   const wfhCount = allRequests.filter((r) => isWorkFromHomeLeave(r.leaveType)).length;
 
   const employees = useMemo((): EmployeeColumn[] => {
-    const fromPicker = (usersData?.users ?? []).map((u) => ({
-      id: u.id,
-      name: u.name?.trim() || u.email || `User #${u.id}`,
-      email: u.email ?? null,
-      avatar: u.avatar ?? null,
-      // Normalize to IST YYYY-MM-DD so day-20 cutoff is not affected by UTC serialization.
-      dateOfJoining: toJoiningDateKey(u.dateOfJoining ?? null),
-      employmentType: u.employmentType ?? null,
-      position: u.position ?? null,
-    }));
+    const isAdminUser = (role: string | null | undefined) =>
+      String(role ?? "").toLowerCase() === "admin";
+
+    const fromPicker = (usersData?.users ?? [])
+      .filter((u) => !isAdminUser(u.role))
+      .map((u) => ({
+        id: u.id,
+        name: u.name?.trim() || u.email || `User #${u.id}`,
+        email: u.email ?? null,
+        avatar: u.avatar ?? null,
+        // Normalize to IST YYYY-MM-DD so day-20 cutoff is not affected by UTC serialization.
+        dateOfJoining: toJoiningDateKey(u.dateOfJoining ?? null),
+        employmentType: u.employmentType ?? null,
+        position: u.position ?? null,
+        onNoticePeriod: Boolean(u.onNoticePeriod),
+      }));
     if (fromPicker.length > 0) {
       return [...fromPicker].sort((a, b) => a.name.localeCompare(b.name));
     }
 
+    const adminIds = new Set(
+      (usersData?.users ?? []).filter((u) => isAdminUser(u.role)).map((u) => u.id),
+    );
     const byId = new Map<number, EmployeeColumn>();
     for (const req of allRequests) {
+      if (adminIds.has(req.userId)) continue;
       if (byId.has(req.userId)) continue;
       byId.set(req.userId, {
         id: req.userId,
@@ -317,6 +371,7 @@ export default function LeaveManagement() {
         dateOfJoining: null,
         employmentType: null,
         position: null,
+        onNoticePeriod: false,
       });
     }
     return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -369,7 +424,13 @@ export default function LeaveManagement() {
       paidDays: number;
       /** Calendar days of paid leave that fall in this month (before borrowing). */
       rawPaidDays: number;
+      /** Leaves whose dates fall in this calendar month (no WFH). */
       requests: LeaveRequestRow[];
+      /**
+       * Paid leaves from a later month that borrowed this month’s PL.
+       * Used only when this month has no calendar leave, so the info icon still works.
+       */
+      borrowRequests: LeaveRequestRow[];
     };
 
     const months = MONTH_LABELS.map((_, monthIndex) => {
@@ -380,6 +441,7 @@ export default function LeaveManagement() {
           paidDays: 0,
           rawPaidDays: 0,
           requests: [],
+          borrowRequests: [],
         });
       }
       return { month, label: MONTH_LABELS[monthIndex], byEmployee };
@@ -387,27 +449,45 @@ export default function LeaveManagement() {
 
     // 1) Collect raw calendar paid days + requests per month.
     for (const req of activeInYear) {
+      // Month detail lists show leave taken in that calendar month only (no WFH).
+      if (isWorkFromHomeLeave(req.leaveType)) continue;
+
+      const half = isHalfDayLeave(req);
+      const userId = Number(req.userId);
       for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
         const month = monthIndex + 1;
+        const touches = leaveTouchesMonth(
+          req.startDate,
+          req.endDate,
+          usageYear,
+          month,
+          req.leaveType,
+          half,
+        );
+        if (!touches) continue;
+
+        const bucket = months[monthIndex].byEmployee.get(userId);
+        if (!bucket) continue;
+        if (!bucket.requests.some((r) => r.id === req.id)) {
+          bucket.requests.push(req);
+        }
+
         const days = leaveDaysInMonth(
           req.startDate,
           req.endDate,
           usageYear,
           month,
           req.leaveType,
-          Boolean(req.isHalfDay) || req.days === 0.5,
+          half,
         );
-        if (days <= 0) continue;
-        const bucket = months[monthIndex].byEmployee.get(req.userId);
-        if (!bucket) continue;
-        bucket.requests.push(req);
-        if (consumesPaidBalance(req.leaveType)) {
+        if (days > 0 && consumesPaidBalance(req.leaveType)) {
           bucket.rawPaidDays += days;
         }
       }
     }
 
-    // 2) Allocate PL across months: current month first, excess borrows from previous months.
+    // 2) Allocate PL across months: current month first; excess borrows only from
+    //    the immediately previous month (not further back).
     //    Pre-joining + probation months have 0 capacity.
     for (const emp of employees) {
       const employmentType = resolveEmploymentType(emp);
@@ -415,6 +495,7 @@ export default function LeaveManagement() {
         usageYear,
         emp.dateOfJoining,
         employmentType,
+        emp.onNoticePeriod,
       );
       const rawActive = months.map((row) => row.byEmployee.get(emp.id)?.rawPaidDays ?? 0);
       const allocatedActive = allocatePaidLeaveAcrossMonths(rawActive, capacities);
@@ -425,8 +506,10 @@ export default function LeaveManagement() {
         bucket.paidDays = allocatedActive[monthIndex] ?? 0;
       }
 
-      // Attach spill-source requests onto borrowed months so HR can open leave details.
-      for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+      // When a later month overflows, it borrows only from the immediately previous
+      // month — attach that later leave onto the borrowed month for the info icon.
+      // Only used when the borrowed month has no leave of its own.
+      for (let monthIndex = 1; monthIndex < 12; monthIndex += 1) {
         const raw = rawActive[monthIndex] ?? 0;
         const monthCap = capacities[monthIndex] ?? MONTHLY_PAID_LEAVES;
         if (raw <= monthCap) continue;
@@ -437,16 +520,17 @@ export default function LeaveManagement() {
         );
         if (paidSourceReqs.length === 0) continue;
 
-        for (let prev = monthIndex - 1; prev >= 0; prev -= 1) {
-          const prevBucket = months[prev].byEmployee.get(emp.id);
-          if (!prevBucket) continue;
-          const borrowed = allocatedActive[prev] ?? 0;
-          const prevRaw = rawActive[prev] ?? 0;
-          if (borrowed <= prevRaw) continue;
-          for (const req of paidSourceReqs) {
-            if (!prevBucket.requests.some((r) => r.id === req.id)) {
-              prevBucket.requests.push(req);
-            }
+        const prev = monthIndex - 1;
+        const prevBucket = months[prev].byEmployee.get(emp.id);
+        if (!prevBucket) continue;
+        const borrowedAmt = allocatedActive[prev] ?? 0;
+        const prevRaw = rawActive[prev] ?? 0;
+        if (borrowedAmt <= prevRaw) continue;
+        // Prefer calendar-month leaves when present.
+        if (prevBucket.requests.length > 0) continue;
+        for (const req of paidSourceReqs) {
+          if (!prevBucket.borrowRequests.some((r) => r.id === req.id)) {
+            prevBucket.borrowRequests.push(req);
           }
         }
       }
@@ -468,6 +552,8 @@ export default function LeaveManagement() {
     // Year Used PL = applied (pending + approved) paid days in this year.
     // Denominator is always 12 (annual entitlement); monthly cells handle probation zeros.
     for (const req of activeInYear) {
+      if (isWorkFromHomeLeave(req.leaveType)) continue;
+      const half = isHalfDayLeave(req);
       let daysInYear = 0;
       for (let month = 1; month <= 12; month += 1) {
         daysInYear += leaveDaysInMonth(
@@ -476,7 +562,7 @@ export default function LeaveManagement() {
           usageYear,
           month,
           req.leaveType,
-          Boolean(req.isHalfDay) || req.days === 0.5,
+          half,
         );
       }
       if (daysInYear <= 0) continue;
@@ -703,6 +789,15 @@ export default function LeaveManagement() {
 
   const toggleWfhExpanded = (employeeId: number) => {
     setExpandedWfhIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(employeeId)) next.delete(employeeId);
+      else next.add(employeeId);
+      return next;
+    });
+  };
+
+  const toggleLeaveUsageExpanded = (employeeId: number) => {
+    setExpandedLeaveUsageIds((prev) => {
       const next = new Set(prev);
       if (next.has(employeeId)) next.delete(employeeId);
       else next.add(employeeId);
@@ -960,16 +1055,25 @@ export default function LeaveManagement() {
 
         {leaveUsageExpanded ? (
           <div className="border-t border-gray-100">
-            <div className="px-5 py-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs text-gray-500 max-w-3xl">
-                Each eligible month shows {MONTHLY_PAID_LEAVES} paid leave. Months before joining and
-                the probation window show 0 (3 months for full-time, 6 for interns). Joining on/after
-                the 20th starts that window the next month — e.g. join 20 Apr → no PL in May–Jul.
-                Used PL is used/entitlement; Remain PL is entitlement minus used. Extra paid days
-                borrow from previous months. {TOTAL_SICK_LEAVES} sick leaves per year.
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative">
+            <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
+              {!native ? (
+                <p className="text-xs text-gray-500 max-w-3xl">
+                  Each eligible month shows {MONTHLY_PAID_LEAVES} paid leave. Months before joining and
+                  the probation window show 0 (3 months for full-time, 6 for interns). Joining on/after
+                  the 20th starts that window the next month — e.g. join 20 Apr → no PL in May–Jul.
+                  Used PL is used/entitlement; Remain PL is entitlement minus used. Extra paid days
+                  in a month borrow only from the immediately previous month (e.g. August → July),
+                  not from earlier months. Sick leave is {TOTAL_SICK_LEAVES}/year (1 per 4 months);
+                  WFH is {TOTAL_WFH_DAYS}/year (5 per 3 months) — both prorated by joining month.
+                </p>
+              ) : (
+                <p className="text-xs text-gray-500">
+                  Tap an employee to view monthly paid leave remaining. Used PL / Remain PL / Used SL
+                  shown as summary.
+                </p>
+              )}
+              <div className={cn("flex flex-wrap items-center gap-2", native && "w-full")}>
+                <div className={cn("relative", native ? "flex-1 min-w-0" : "")}>
                   <Search
                     size={15}
                     className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
@@ -979,10 +1083,13 @@ export default function LeaveManagement() {
                     value={employeeSearch}
                     onChange={(e) => setEmployeeSearch(e.target.value)}
                     placeholder="Search employees…"
-                    className="h-9 w-52 sm:w-64 pl-9 pr-3 rounded-lg border border-gray-200 bg-white text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+                    className={cn(
+                      "h-9 pl-9 pr-3 rounded-lg border border-gray-200 bg-white text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]",
+                      native ? "w-full" : "w-52 sm:w-64",
+                    )}
                   />
                 </div>
-                <label className="flex items-center gap-2 text-sm text-gray-600">
+                <label className="flex items-center gap-2 text-sm text-gray-600 shrink-0">
                   Year
                   <select
                     value={usageYear}
@@ -1007,21 +1114,230 @@ export default function LeaveManagement() {
               <div className="py-12 text-center text-sm text-gray-500">
                 No employees match “{employeeSearch.trim()}”.
               </div>
+            ) : native ? (
+              <ul className="divide-y divide-gray-100">
+                {filteredUsageEmployees.map((emp) => {
+                  const totals = monthlyUsage.totalsByEmployee.get(emp.id);
+                  const paidDays = totals?.paid ?? 0;
+                  const sickDays = totals?.sick ?? 0;
+                  const employmentType = resolveEmploymentType(emp);
+                  const monthCaps = paidLeaveMonthCapacities(
+                    usageYear,
+                    emp.dateOfJoining,
+                    employmentType,
+                    emp.onNoticePeriod,
+                  );
+                  const paidEntitlement = annualPaidLeaveEntitlement(
+                    usageYear,
+                    emp.dateOfJoining,
+                    employmentType,
+                    emp.onNoticePeriod,
+                  );
+                  const paidRemaining = Math.max(0, paidEntitlement - paidDays);
+                  const sickEntitlement = annualSickLeaveEntitlement(
+                    usageYear,
+                    emp.dateOfJoining,
+                  );
+                  const expanded = expandedLeaveUsageIds.has(emp.id);
+
+                  return (
+                    <li key={emp.id} className="bg-white">
+                      <div className="px-4 py-3.5 flex items-start gap-3">
+                        <button
+                          type="button"
+                          onClick={() => toggleLeaveUsageExpanded(emp.id)}
+                          aria-expanded={expanded}
+                          className="mt-1.5 shrink-0 rounded-md p-0.5 text-gray-400 active:bg-gray-100"
+                          aria-label={expanded ? "Collapse months" : "Expand months"}
+                        >
+                          <ChevronDown
+                            size={16}
+                            className={cn(
+                              "transition-transform",
+                              expanded && "rotate-180",
+                            )}
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleLeaveUsageExpanded(emp.id)}
+                          className="shrink-0"
+                          aria-label={`Toggle ${emp.name}`}
+                        >
+                          <UserAvatar name={emp.name} avatar={emp.avatar} size={36} />
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          <button
+                            type="button"
+                            onClick={() => toggleLeaveUsageExpanded(emp.id)}
+                            className="w-full text-left"
+                          >
+                            <div className="text-sm font-semibold text-[#1F2937] truncate">
+                              {emp.name}
+                            </div>
+                          </button>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            <button
+                              type="button"
+                              disabled={paidDays === 0}
+                              onClick={() =>
+                                openCellLeaves(
+                                  emp,
+                                  `Paid leave ${usageYear}`,
+                                  totals?.paidRequests ?? [],
+                                )
+                              }
+                              className={cn(
+                                "inline-flex items-center rounded-md px-2 py-1 text-[11px] tabular-nums",
+                                paidDays > 0
+                                  ? "font-semibold text-blue-700 bg-blue-100/80"
+                                  : "text-gray-400 bg-gray-50",
+                              )}
+                            >
+                              Used PL {paidDays}/{paidEntitlement}
+                            </button>
+                            <span className="inline-flex items-center rounded-md px-2 py-1 text-[11px] tabular-nums text-green-800 bg-green-50">
+                              Remain PL {paidRemaining}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={sickDays === 0}
+                              onClick={() =>
+                                openCellLeaves(
+                                  emp,
+                                  `Sick leave ${usageYear}`,
+                                  totals?.sickRequests ?? [],
+                                )
+                              }
+                              className={cn(
+                                "inline-flex items-center rounded-md px-2 py-1 text-[11px] tabular-nums",
+                                sickDays > 0
+                                  ? "font-semibold text-red-700 bg-red-100/80"
+                                  : "text-gray-400 bg-gray-50",
+                              )}
+                            >
+                              Used SL {sickDays}/{sickEntitlement}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {expanded ? (
+                        <div className="px-4 pb-4 pt-0">
+                          <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3">
+                            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                              Monthly remaining PL
+                            </p>
+                            <div className="grid grid-cols-4 gap-2">
+                              {monthlyUsage.months.map((row) => {
+                                const cell = row.byEmployee.get(emp.id) ?? {
+                                  paidDays: 0,
+                                  rawPaidDays: 0,
+                                  requests: [] as LeaveRequestRow[],
+                                  borrowRequests: [] as LeaveRequestRow[],
+                                };
+                                const monthCapacity =
+                                  monthCaps[row.month - 1] ?? MONTHLY_PAID_LEAVES;
+                                const probationLocked = isPaidLeaveMonthLocked(
+                                  usageYear,
+                                  row.month,
+                                  emp.dateOfJoining,
+                                  employmentType,
+                                  emp.onNoticePeriod,
+                                );
+                                const autoPaid = cell.paidDays;
+                                const overridePaid = overridePaidByKey.get(
+                                  `${emp.id}-${row.month}`,
+                                );
+                                const effectivePaid = Math.max(autoPaid, overridePaid ?? 0);
+                                const remaining = probationLocked
+                                  ? 0
+                                  : remainingMonthlyPaidLeave(effectivePaid, monthCapacity);
+                                const detailRequests =
+                                  cell.requests.length > 0
+                                    ? cell.requests
+                                    : cell.borrowRequests;
+                                const hasLeave = detailRequests.length > 0;
+                                const usedPaid = effectivePaid > 0;
+                                const borrowed =
+                                  (cell.paidDays ?? 0) > (cell.rawPaidDays ?? 0);
+                                const isManual =
+                                  !probationLocked &&
+                                  overridePaid != null &&
+                                  overridePaid > autoPaid;
+
+                                return (
+                                  <div
+                                    key={row.month}
+                                    className="flex flex-col items-center gap-1 rounded-lg bg-white border border-gray-100 px-1 py-2"
+                                  >
+                                    <span className="text-[10px] font-semibold text-gray-500">
+                                      {row.label}
+                                    </span>
+                                    <div className="inline-flex items-center gap-0.5">
+                                      <MonthlyRemainingInput
+                                        value={remaining}
+                                        max={remainingMonthlyPaidLeave(
+                                          autoPaid,
+                                          monthCapacity,
+                                        )}
+                                        disabled={
+                                          setUsageOverrideMutation.isPending ||
+                                          probationLocked
+                                        }
+                                        isManual={isManual}
+                                        usedPaid={usedPaid}
+                                        hasLeave={hasLeave}
+                                        title={
+                                          probationLocked
+                                            ? "No paid leave for this month"
+                                            : borrowed
+                                              ? `Borrowed · ${effectivePaid} used · ${remaining} remaining`
+                                              : `${remaining} remaining`
+                                        }
+                                        onCommit={(next) =>
+                                          saveMonthlyRemaining(
+                                            emp.id,
+                                            row.month,
+                                            autoPaid,
+                                            next,
+                                          )
+                                        }
+                                      />
+                                      {hasLeave ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            openCellLeaves(
+                                              emp,
+                                              `${row.label} ${usageYear}`,
+                                              detailRequests,
+                                            )
+                                          }
+                                          title="View leave requests"
+                                          className="h-5 w-5 rounded text-[10px] font-bold text-gray-400 hover:text-[#2563EB]"
+                                        >
+                                          i
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-full text-sm border-collapse table-fixed">
-                  <colgroup>
-                    <col className="w-[18%]" />
-                    {monthlyUsage.months.map((row) => (
-                      <col key={row.month} />
-                    ))}
-                    <col className="w-[7%]" />
-                    <col className="w-[7%]" />
-                    <col className="w-[7%]" />
-                  </colgroup>
+                <table className="w-full min-w-[1100px] text-sm border-collapse">
                   <thead>
                     <tr className="bg-gray-50">
-                      <th className="sticky left-0 z-10 bg-gray-50 text-left text-sm font-semibold text-gray-500 pl-3 pr-2 py-2.5 border-b border-gray-100">
+                      <th className="sticky left-0 z-10 bg-gray-50 text-left text-sm font-semibold text-gray-500 pl-3 pr-2 py-2.5 border-b border-gray-100 min-w-[160px]">
                         Employee
                         {employeeSearch.trim() ? (
                           <span className="ml-1 font-normal text-gray-400">
@@ -1032,7 +1348,7 @@ export default function LeaveManagement() {
                       {monthlyUsage.months.map((row) => (
                         <th
                           key={row.month}
-                          className="text-center text-sm font-semibold text-gray-600 p-0 py-2.5 border-b border-gray-100"
+                          className="text-center text-sm font-semibold text-gray-600 px-1 py-2.5 border-b border-gray-100 min-w-[44px]"
                         >
                           {row.label}
                         </th>
@@ -1053,19 +1369,25 @@ export default function LeaveManagement() {
                   const totals = monthlyUsage.totalsByEmployee.get(emp.id);
                   const paidDays = totals?.paid ?? 0;
                   const sickDays = totals?.sick ?? 0;
-                  const sickRemaining = Math.max(0, TOTAL_SICK_LEAVES - sickDays);
                   const employmentType = resolveEmploymentType(emp);
                   const monthCaps = paidLeaveMonthCapacities(
                     usageYear,
                     emp.dateOfJoining,
                     employmentType,
+                    emp.onNoticePeriod,
                   );
                   const paidEntitlement = annualPaidLeaveEntitlement(
                     usageYear,
                     emp.dateOfJoining,
                     employmentType,
+                    emp.onNoticePeriod,
                   );
                   const paidRemaining = Math.max(0, paidEntitlement - paidDays);
+                  const sickEntitlement = annualSickLeaveEntitlement(
+                    usageYear,
+                    emp.dateOfJoining,
+                  );
+                  const sickRemaining = Math.max(0, sickEntitlement - sickDays);
 
                   return (
                     <tr key={emp.id} className="hover:bg-gray-50/60">
@@ -1089,6 +1411,7 @@ export default function LeaveManagement() {
                           paidDays: 0,
                           rawPaidDays: 0,
                           requests: [] as LeaveRequestRow[],
+                          borrowRequests: [] as LeaveRequestRow[],
                         };
                         const monthCapacity = monthCaps[row.month - 1] ?? MONTHLY_PAID_LEAVES;
                         const probationLocked = isPaidLeaveMonthLocked(
@@ -1096,6 +1419,7 @@ export default function LeaveManagement() {
                           row.month,
                           emp.dateOfJoining,
                           employmentType,
+                          emp.onNoticePeriod,
                         );
                         // Allocated usage (includes borrowing from previous months).
                         const autoPaid = cell.paidDays;
@@ -1104,7 +1428,12 @@ export default function LeaveManagement() {
                         const remaining = probationLocked
                           ? 0
                           : remainingMonthlyPaidLeave(effectivePaid, monthCapacity);
-                        const hasLeave = cell.requests.length > 0;
+                        // Calendar leaves first; borrowRequests cover months that only lent PL.
+                        const detailRequests =
+                          cell.requests.length > 0
+                            ? cell.requests
+                            : cell.borrowRequests;
+                        const hasLeave = detailRequests.length > 0;
                         const usedPaid = effectivePaid > 0;
                         const borrowed = (cell.paidDays ?? 0) > (cell.rawPaidDays ?? 0);
                         const isManual =
@@ -1128,7 +1457,9 @@ export default function LeaveManagement() {
                                 hasLeave={hasLeave}
                                 title={
                                   probationLocked
-                                    ? monthCapacity === 0 && emp.dateOfJoining
+                                    ? emp.onNoticePeriod
+                                      ? "No paid leave while on notice period (current and future months)"
+                                      : monthCapacity === 0 && emp.dateOfJoining
                                       ? employmentType === "intern"
                                         ? "No paid leave (before joining, or 6 months: 3 internship + 3 probation; starts next month if joined on/after the 20th)"
                                         : "No paid leave (before joining, or 3 months probation; starts next month if joined on/after the 20th)"
@@ -1154,7 +1485,7 @@ export default function LeaveManagement() {
                                     openCellLeaves(
                                       emp,
                                       `${row.label} ${usageYear}`,
-                                      cell.requests,
+                                      detailRequests,
                                     )
                                   }
                                   title="View leave requests"
@@ -1208,7 +1539,7 @@ export default function LeaveManagement() {
                               totals?.sickRequests ?? [],
                             )
                           }
-                          title={`${sickDays} used · ${sickRemaining} remaining of ${TOTAL_SICK_LEAVES}`}
+                          title={`${sickDays} used · ${sickRemaining} remaining of ${sickEntitlement}`}
                           className={cn(
                             "inline-flex h-8 px-1 items-center justify-center rounded-md text-sm tabular-nums whitespace-nowrap",
                             sickDays > 0
@@ -1216,7 +1547,7 @@ export default function LeaveManagement() {
                               : "text-gray-400",
                           )}
                         >
-                          {sickDays}/{TOTAL_SICK_LEAVES}
+                          {sickDays}/{sickEntitlement}
                         </button>
                       </td>
                     </tr>
@@ -1243,7 +1574,7 @@ export default function LeaveManagement() {
               <h2 className="text-sm font-semibold text-[#1F2937]">Work from home usage</h2>
             </div>
             <p className="text-xs text-gray-500 mt-0.5">
-              {TOTAL_WFH_DAYS} WFH days per employee per year
+              Up to {TOTAL_WFH_DAYS} WFH days/year (5 per 3 months), prorated by joining month
               {!wfhUsageExpanded ? ` · ${usageYear}` : ""}
             </p>
           </div>
@@ -1261,7 +1592,8 @@ export default function LeaveManagement() {
             <div className="px-5 py-4 border-b border-gray-100 space-y-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <p className="text-xs text-gray-500">
-                  Showing {usageYear} · pending and approved count toward the total
+                  Showing {usageYear} · pending and approved count toward the total · WFH
+                  allotment drops by 5 for each full 3-month span before joining
                 </p>
                 <button type="button" onClick={() => setManualWfhOpen(true)} className="h-10 px-4 rounded-lg bg-teal-600 text-white text-sm font-semibold inline-flex items-center gap-1.5 hover:bg-teal-700 shrink-0">
                   <Plus size={16} /> Manual WFH entry
@@ -1290,7 +1622,11 @@ export default function LeaveManagement() {
             ) : (
               <div className="divide-y divide-gray-100">
                 {filteredWfhUsage.map((entry) => {
-                  const remaining = Math.max(0, TOTAL_WFH_DAYS - entry.usedDays);
+                  const wfhEntitlement = annualWfhEntitlement(
+                    usageYear,
+                    entry.employee.dateOfJoining,
+                  );
+                  const remaining = Math.max(0, wfhEntitlement - entry.usedDays);
                   const expanded = expandedWfhIds.has(entry.employee.id);
                   const daysToShow = entry.matchedDays;
                   const hasWfh = entry.usedDays > 0;
@@ -1310,7 +1646,7 @@ export default function LeaveManagement() {
                         </div>
                         <div className="flex flex-wrap items-center justify-end gap-1.5 text-xs shrink-0">
                           <span className="inline-flex items-center rounded-md bg-teal-50 px-2 py-0.5 font-semibold text-teal-700 tabular-nums">
-                            {entry.usedDays}/{TOTAL_WFH_DAYS}
+                            {entry.usedDays}/{wfhEntitlement}
                           </span>
                           <span className="inline-flex items-center rounded-md bg-gray-50 px-2 py-0.5 font-medium text-gray-600 border border-gray-200 tabular-nums">
                             {remaining} left
@@ -1562,6 +1898,11 @@ export default function LeaveManagement() {
           reviewMutation.isPending &&
           reviewMutation.variables?.id === selectedRequest.id
         }
+        savingDetails={
+          !!selectedRequest &&
+          updateDetailsMutation.isPending &&
+          updateDetailsMutation.variables?.id === selectedRequest.id
+        }
         reviewStatus={reviewMutation.variables?.status}
         onOpenChange={(open) => {
           if (!open) setSelectedRequest(null);
@@ -1572,6 +1913,14 @@ export default function LeaveManagement() {
             id: selectedRequest.id,
             status,
             reviewNote: note || undefined,
+          });
+        }}
+        onSaveDetails={(payload) => {
+          if (!selectedRequest) return;
+          updateDetailsMutation.mutate({
+            id: selectedRequest.id,
+            reason: payload.reason,
+            reviewNote: payload.reviewNote,
           });
         }}
       />
@@ -1586,6 +1935,7 @@ export default function LeaveManagement() {
           avatar: u.avatar ?? null,
           department: u.department ?? null,
         }))}
+        existingLeaves={allRequests}
         submitting={createManualMutation.isPending && !manualWfhOpen}
         onSubmit={(payload) => createManualMutation.mutate(payload)}
       />
@@ -1600,6 +1950,7 @@ export default function LeaveManagement() {
           avatar: u.avatar ?? null,
           department: u.department ?? null,
         }))}
+        existingLeaves={allRequests}
         submitting={createManualMutation.isPending && manualWfhOpen}
         onSubmit={(payload) => createManualMutation.mutate(payload)}
       />
@@ -1683,10 +2034,32 @@ function MonthlyRemainingInput({
   );
 }
 
+function employeeHasLeaveOnRange(
+  existingLeaves: Array<{
+    userId: number;
+    status: string;
+    startDate: string;
+    endDate: string;
+  }>,
+  userId: number,
+  startDate: string,
+  endDate: string,
+) {
+  const uid = Number(userId);
+  for (const req of existingLeaves) {
+    if (Number(req.userId) !== uid) continue;
+    const status = String(req.status ?? "").toLowerCase();
+    if (status !== "pending" && status !== "approved") continue;
+    if (firstOverlappingLeaveDate(startDate, endDate, req)) return true;
+  }
+  return false;
+}
+
 function ManualLeaveEntryDialog({
   open,
   onOpenChange,
   employees,
+  existingLeaves,
   submitting,
   onSubmit,
 }: {
@@ -1698,6 +2071,12 @@ function ManualLeaveEntryDialog({
     email?: string | null;
     avatar: string | null;
     department: string | null;
+  }>;
+  existingLeaves: Array<{
+    userId: number;
+    status: string;
+    startDate: string;
+    endDate: string;
   }>;
   submitting: boolean;
   onSubmit: (payload: {
@@ -1731,6 +2110,11 @@ function ManualLeaveEntryDialog({
   const selectedEmployee =
     userId === "" ? null : employees.find((e) => e.id === userId) ?? null;
 
+  const blockedDates = useMemo(
+    () => approvedLeaveDateKeysForUser(existingLeaves, userId),
+    [existingLeaves, userId],
+  );
+
   useEffect(() => {
     if (!open) return;
     setUserId("");
@@ -1748,8 +2132,18 @@ function ManualLeaveEntryDialog({
     if (isHalfDay && startDate) setEndDate(startDate);
   }, [isHalfDay, startDate]);
 
+  useEffect(() => {
+    if (startDate && blockedDates.has(startDate)) {
+      setStartDate("");
+      setEndDate("");
+      return;
+    }
+    if (endDate && blockedDates.has(endDate)) setEndDate("");
+  }, [blockedDates, startDate, endDate]);
+
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     setError(null);
 
     if (userId === "") {
@@ -1769,11 +2163,19 @@ function ManualLeaveEntryDialog({
       return;
     }
 
+    const submitEnd = isHalfDay ? startDate : endDate || startDate;
+    if (employeeHasLeaveOnRange(existingLeaves, userId, startDate, submitEnd)) {
+      const message = leaveAlreadyExistsForEmployeeMessage(startDate);
+      setError(message);
+      toast.error(message);
+      return;
+    }
+
     onSubmit({
       userId,
       leaveType,
       startDate,
-      endDate: isHalfDay ? startDate : endDate || startDate,
+      endDate: submitEnd,
       reason: isWorkFromHomeLeave(leaveType) ? "" : reason.trim(),
       isHalfDay: isHalfDay && allowsHalfDayLeave(leaveType),
       status,
@@ -1783,7 +2185,7 @@ function ManualLeaveEntryDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Manual Leave Entry</DialogTitle>
           <DialogDescription>
@@ -1805,7 +2207,11 @@ function ManualLeaveEntryDialog({
                 avatar: emp.avatar,
               }))}
               value={userId === "" ? null : userId}
-              onValueChange={(id) => setUserId(id ?? "")}
+              onValueChange={(id) => {
+                setUserId(id ?? "");
+                setStartDate("");
+                setEndDate("");
+              }}
               placeholder="Select employee…"
               searchPlaceholder="Search employees…"
             />
@@ -1891,18 +2297,30 @@ function ManualLeaveEntryDialog({
               <label className="text-xs font-medium text-gray-500">
                 {isHalfDay ? "Date of leave" : "From"}
               </label>
-              <input type="date" value={startDate}
-                onChange={(e) => {
-                  setStartDate(e.target.value);
-                  if (isHalfDay) setEndDate(e.target.value);
-                }} className="w-full h-10 px-3 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"/>
+              <LeaveDatePickerField
+                value={startDate}
+                onChange={(next) => {
+                  setStartDate(next);
+                  if (isHalfDay) setEndDate(next);
+                }}
+                blockedDates={blockedDates}
+                disabled={userId === ""}
+                placeholder={userId === "" ? "Select employee first" : "Select date"}
+              />
             </div>
             {!isHalfDay ? (
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-gray-500">
                   To <span className="font-normal text-gray-400">(optional)</span>
                 </label>
-                <input type="date" value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} className="w-full h-10 px-3 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"/>
+                <LeaveDatePickerField
+                  value={endDate}
+                  onChange={setEndDate}
+                  blockedDates={blockedDates}
+                  minDate={startDate || undefined}
+                  disabled={userId === ""}
+                  placeholder={userId === "" ? "Select employee first" : "Select date"}
+                />
               </div>
             ) : null}
           </div>
@@ -1981,6 +2399,7 @@ function ManualWfhEntryDialog({
   open,
   onOpenChange,
   employees,
+  existingLeaves,
   submitting,
   onSubmit,
 }: {
@@ -1992,6 +2411,12 @@ function ManualWfhEntryDialog({
     email?: string | null;
     avatar: string | null;
     department: string | null;
+  }>;
+  existingLeaves: Array<{
+    userId: number;
+    status: string;
+    startDate: string;
+    endDate: string;
   }>;
   submitting: boolean;
   onSubmit: (payload: {
@@ -2019,6 +2444,11 @@ function ManualWfhEntryDialog({
   const selectedEmployee =
     userId === "" ? null : employees.find((e) => e.id === userId) ?? null;
 
+  const blockedDates = useMemo(
+    () => approvedLeaveDateKeysForUser(existingLeaves, userId),
+    [existingLeaves, userId],
+  );
+
   useEffect(() => {
     if (!open) return;
     setUserId("");
@@ -2029,8 +2459,18 @@ function ManualWfhEntryDialog({
     setError(null);
   }, [open]);
 
+  useEffect(() => {
+    if (startDate && blockedDates.has(startDate)) {
+      setStartDate("");
+      setEndDate("");
+      return;
+    }
+    if (endDate && blockedDates.has(endDate)) setEndDate("");
+  }, [blockedDates, startDate, endDate]);
+
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     setError(null);
 
     if (userId === "") {
@@ -2046,11 +2486,19 @@ function ManualWfhEntryDialog({
       return;
     }
 
+    const submitEnd = endDate || startDate;
+    if (employeeHasLeaveOnRange(existingLeaves, userId, startDate, submitEnd)) {
+      const message = leaveAlreadyExistsForEmployeeMessage(startDate);
+      setError(message);
+      toast.error(message);
+      return;
+    }
+
     onSubmit({
       userId,
       leaveType: "wfh",
       startDate,
-      endDate: endDate || startDate,
+      endDate: submitEnd,
       reason: "",
       isHalfDay: false,
       status,
@@ -2060,7 +2508,7 @@ function ManualWfhEntryDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Manual WFH Entry</DialogTitle>
           <DialogDescription>
@@ -2080,7 +2528,11 @@ function ManualWfhEntryDialog({
                 avatar: emp.avatar,
               }))}
               value={userId === "" ? null : userId}
-              onValueChange={(id) => setUserId(id ?? "")}
+              onValueChange={(id) => {
+                setUserId(id ?? "");
+                setStartDate("");
+                setEndDate("");
+              }}
               placeholder="Select employee…"
               searchPlaceholder="Search employees…"
               triggerClassName="focus:ring-teal-500/20 focus:border-teal-600"
@@ -2112,23 +2564,27 @@ function ManualWfhEntryDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-gray-500">From</label>
-              <input
-                type="date"
+              <LeaveDatePickerField
                 value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-full h-10 px-3 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600"
+                onChange={setStartDate}
+                blockedDates={blockedDates}
+                disabled={userId === ""}
+                placeholder={userId === "" ? "Select employee first" : "Select date"}
+                focusRingClassName="focus:ring-teal-500/20 focus:border-teal-600"
               />
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-gray-500">
                 To <span className="font-normal text-gray-400">(optional)</span>
               </label>
-              <input
-                type="date"
+              <LeaveDatePickerField
                 value={endDate}
-                min={startDate || undefined}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-full h-10 px-3 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600"
+                onChange={setEndDate}
+                blockedDates={blockedDates}
+                minDate={startDate || undefined}
+                disabled={userId === ""}
+                placeholder={userId === "" ? "Select employee first" : "Select date"}
+                focusRingClassName="focus:ring-teal-500/20 focus:border-teal-600"
               />
             </div>
           </div>
@@ -2215,27 +2671,43 @@ function LeaveRequestDetailDialog({
   request,
   open,
   reviewing,
+  savingDetails,
   reviewStatus,
   onOpenChange,
   onSetStatus,
+  onSaveDetails,
 }: {
   request: LeaveRequestRow | null;
   open: boolean;
   reviewing: boolean;
+  savingDetails: boolean;
   reviewStatus?: "approved" | "rejected" | "cancelled" | "pending";
   onOpenChange: (open: boolean) => void;
   onSetStatus: (
     status: "approved" | "rejected" | "cancelled" | "pending",
     note?: string,
   ) => void;
+  onSaveDetails: (payload: { reason: string; reviewNote: string }) => void;
 }) {
+  const [reason, setReason] = useState("");
   const [reviewNote, setReviewNote] = useState("");
 
   useEffect(() => {
-    if (!open) setReviewNote("");
-  }, [open, request?.id]);
+    if (!open || !request) return;
+    setReason(request.reason ?? "");
+    setReviewNote(request.reviewNote ?? "");
+  }, [open, request?.id, request?.reason, request?.reviewNote]);
 
   if (!request) return null;
+
+  const isWfh = isWorkFromHomeLeave(request.leaveType);
+  const originalReason = request.reason ?? "";
+  const originalNote = request.reviewNote ?? "";
+  const reasonChanged = reason.trim() !== originalReason.trim();
+  const noteChanged = reviewNote.trim() !== originalNote.trim();
+  const hasChanges = reasonChanged || noteChanged;
+  const reasonValid = isWfh || reason.trim().length >= 3;
+  const canSave = hasChanges && reasonValid && !reviewing && !savingDetails;
 
   const dateLabel =
     request.startDate === request.endDate
@@ -2334,30 +2806,41 @@ function LeaveRequestDetailDialog({
             label="Duration"
             value={formatLeaveDays(request.days)}
           />
-          <DetailRow label="Reason" value={request.reason} />
           <DetailRow label="Applied on" value={formatWorkZoneDateTime(request.createdAt)} />
 
-          {request.status !== "pending" && (
-            <>
-              {request.reviewedAt ? (
-                <DetailRow
-                  label={
-                    request.status === "approved"
-                      ? "Approved on"
-                      : request.status === "rejected"
-                        ? "Rejected on"
-                        : request.status === "cancelled"
-                          ? "Cancelled on"
-                          : "Reviewed on"
-                  }
-                  value={formatWorkZoneDateTime(request.reviewedAt)}
-                />
+          {request.status !== "pending" && request.reviewedAt ? (
+            <DetailRow
+              label={
+                request.status === "approved"
+                  ? "Approved on"
+                  : request.status === "rejected"
+                    ? "Rejected on"
+                    : request.status === "cancelled"
+                      ? "Cancelled on"
+                      : "Reviewed on"
+              }
+              value={formatWorkZoneDateTime(request.reviewedAt)}
+            />
+          ) : null}
+
+          {!isWfh ? (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Reason</label>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={3}
+                disabled={reviewing || savingDetails}
+                placeholder="Reason for leave…"
+                className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] disabled:opacity-60"
+              />
+              {!reasonValid ? (
+                <p className="text-[11px] text-red-500 mt-1">
+                  Reason must be at least 3 characters.
+                </p>
               ) : null}
-              {request.reviewNote ? (
-                <DetailRow label="Review note" value={request.reviewNote} />
-              ) : null}
-            </>
-          )}
+            </div>
+          ) : null}
 
           <div className="pt-2 border-t border-gray-100 space-y-3">
             <div>
@@ -2368,10 +2851,26 @@ function LeaveRequestDetailDialog({
                 value={reviewNote}
                 onChange={(e) => setReviewNote(e.target.value)}
                 rows={2}
-                placeholder="Shown to the employee with status change…"
-                className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+                disabled={reviewing || savingDetails}
+                placeholder="Add or update a note for the employee…"
+                className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] disabled:opacity-60"
               />
             </div>
+
+            <button
+              type="button"
+              disabled={!canSave}
+              onClick={() =>
+                onSaveDetails({
+                  reason: reason.trim(),
+                  reviewNote: reviewNote.trim(),
+                })
+              }
+              className="w-full h-10 rounded-lg bg-[#2563EB] text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 hover:bg-[#1D4ED8] disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {savingDetails ? <Loader2 size={16} className="animate-spin" /> : null}
+              Save
+            </button>
 
             <p className="text-xs text-gray-500">Update leave status</p>
             <div className="grid grid-cols-2 gap-2">
@@ -2383,7 +2882,7 @@ function LeaveRequestDetailDialog({
                   <button
                     key={action.status}
                     type="button"
-                    disabled={reviewing || isCurrent}
+                    disabled={reviewing || savingDetails || isCurrent}
                     onClick={() =>
                       onSetStatus(action.status, reviewNote.trim() || undefined)
                     }

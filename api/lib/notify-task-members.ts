@@ -5,36 +5,46 @@ import { isHrDepartmentUser } from "@/lib/leave-policy";
 
 type NotifyTaskMembersInput = {
   taskId: number;
-  actor: SafeUser;
+  actor: SafeUser | null;
   type: NotificationDoc["type"];
   title: string;
   message: string;
   activityId?: number | null;
   /**
    * Extra recipients (e.g. newly added participant).
-   * Participants are never notified by default — only the assignee falls
-   * through unless includeAssignee is false.
+   * By default only the assignee is notified unless the include* flags are set.
    */
   extraRecipientIds?: number[];
   excludeUserIds?: number[];
-  /** When false, skip the task assignee (e.g. participant-only alerts). Default true. */
+  /** When false, skip the task assignee. Default true. */
   includeAssignee?: boolean;
+  /** When true, include task participants. Default false. */
+  includeParticipants?: boolean;
+  /** When true, include task observers. Default false. */
+  includeObservers?: boolean;
+  /** Organization id when actor is null (system notifications). */
+  organizationId?: number | null;
 };
 
 export async function getTaskRecipientIds(taskId: number) {
   const task = await findById<TaskDoc>(Collections.tasks, taskId);
-  if (!task) return { assigneeId: null as number | null, participantIds: [] as number[] };
+  if (!task) {
+    return {
+      assigneeId: null as number | null,
+      participantIds: [] as number[],
+      observerIds: [] as number[],
+    };
+  }
 
   const participantCol = await getCollection<{ userId: number; role: string }>(
     Collections.taskParticipants,
   );
-  const participants = await participantCol
-    .find({ taskId, role: "participant" })
-    .toArray();
+  const members = await participantCol.find({ taskId }).toArray();
 
   return {
     assigneeId: task.assigneeId,
-    participantIds: participants.map((p) => p.userId),
+    participantIds: members.filter((p) => p.role === "participant").map((p) => p.userId),
+    observerIds: members.filter((p) => p.role === "observer").map((p) => p.userId),
   };
 }
 
@@ -61,13 +71,25 @@ export async function notifyTaskMembers({
   extraRecipientIds = [],
   excludeUserIds = [],
   includeAssignee = true,
+  includeParticipants = false,
+  includeObservers = false,
+  organizationId = null,
 }: NotifyTaskMembersInput) {
-  const { assigneeId } = await getTaskRecipientIds(taskId);
-  const excluded = new Set([actor.id, ...excludeUserIds]);
+  const { assigneeId, participantIds, observerIds } = await getTaskRecipientIds(taskId);
+  const excluded = new Set([
+    ...(actor ? [actor.id] : []),
+    ...excludeUserIds,
+  ]);
   const recipientIds = new Set<number>();
 
   if (includeAssignee && assigneeId != null) {
     recipientIds.add(assigneeId);
+  }
+  if (includeParticipants) {
+    for (const id of participantIds) recipientIds.add(id);
+  }
+  if (includeObservers) {
+    for (const id of observerIds) recipientIds.add(id);
   }
   for (const id of extraRecipientIds) recipientIds.add(id);
 
@@ -76,12 +98,13 @@ export async function notifyTaskMembers({
   if (recipients.length === 0) return;
 
   const now = new Date();
+  const orgId = actor?.organizationId ?? organizationId ?? null;
   await Promise.all(
     recipients.map((userId) =>
       insertDoc<NotificationDoc>(Collections.notifications, {
         userId,
-        organizationId: actor.organizationId,
-        actorId: actor.id,
+        organizationId: orgId,
+        actorId: actor?.id ?? null,
         type,
         title,
         message,
@@ -92,4 +115,19 @@ export async function notifyTaskMembers({
       }),
     ),
   );
+}
+
+/** Notify assignee, participants, and observers (for deadline / due-date alerts). */
+export async function notifyTaskStakeholders(
+  input: Omit<
+    NotifyTaskMembersInput,
+    "includeAssignee" | "includeParticipants" | "includeObservers"
+  >,
+) {
+  return notifyTaskMembers({
+    ...input,
+    includeAssignee: true,
+    includeParticipants: true,
+    includeObservers: true,
+  });
 }

@@ -74,6 +74,17 @@ export function filterMentionUsers(users: MentionUser[], query: string) {
     .slice(0, 8);
 }
 
+/** Roles allowed in @-mention pickers (hide admin / HR / client). */
+export function isMentionableUserRole(role?: string | null) {
+  const normalized = String(role ?? "").toLowerCase();
+  if (!normalized) return true;
+  return normalized === "employee" || normalized === "manager";
+}
+
+export function filterMentionableUsers<T extends { role?: string | null }>(users: T[]): T[] {
+  return users.filter((user) => isMentionableUserRole(user.role));
+}
+
 export function removeMentionQuery(value: string, start: number, end: number) {
   const before = value.slice(0, start);
   const after = value.slice(end);

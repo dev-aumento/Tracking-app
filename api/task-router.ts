@@ -19,10 +19,10 @@ import {
 } from "./queries/attachment-storage";
 import { omitPasswordHash } from "./queries/users";
 import { notifyLeads } from "./lib/notify-leads";
-import { notifyTaskMembers } from "./lib/notify-task-members";
+import { notifyTaskMembers, notifyTaskStakeholders } from "./lib/notify-task-members";
 import { assertPermission, assertCanChangeTaskAssignee, hasPermission } from "./lib/permissions";
 import { isProjectMember, canViewProjectTasks } from "./queries/project-members";
-import { defaultTaskDeadlineIso } from "@/lib/task-deadline";
+import { defaultTaskDeadlineIso, formatDueLabel } from "@/lib/task-deadline";
 import { Collections } from "@db/mongo/collections";
 import type {
   UserDoc,
@@ -61,19 +61,30 @@ function actorLabel(user: SafeUser) {
 async function isTaskParticipant(taskId: number, userId: number): Promise<boolean> {
   const participantCol = await getCollection<TaskParticipantDoc>(Collections.taskParticipants);
   const row = await participantCol.findOne({
-    taskId,
-    userId,
+    taskId: Number(taskId),
+    userId: Number(userId),
     role: "participant",
   });
   return !!row;
 }
 
+function sameUserId(a?: number | null, b?: number | null) {
+  return a != null && b != null && Number(a) === Number(b);
+}
+
+/** Assignee, owner, participant, manager/admin, or granted edit permissions. */
 async function canManageTaskTime(user: SafeUser, task: TaskDoc): Promise<boolean> {
+  if (
+    hasPermission(user, "time.edit_all") ||
+    hasPermission(user, "tasks.edit_all")
+  ) {
+    return true;
+  }
   if (
     user.role === "admin"
     || user.role === "manager"
-    || task.createdBy === user.id
-    || task.assigneeId === user.id
+    || sameUserId(task.createdBy, user.id)
+    || sameUserId(task.assigneeId, user.id)
   ) {
     return true;
   }
@@ -89,7 +100,8 @@ async function canEditTaskTimeEntry(
   task: TaskDoc,
   entry: TimeEntryDoc,
 ): Promise<boolean> {
-  if (entry.userId === user.id) return true;
+  // Owners can always edit/delete their own completed entries.
+  if (sameUserId(entry.userId, user.id)) return true;
   return canManageTaskTime(user, task);
 }
 
@@ -528,6 +540,7 @@ export const taskRouter = createRouter({
       }
 
       // Completing a task (Done / Finished) always clears the assignee.
+      // Due-date changes / overdue reminders must never clear the assignee or stop timers.
       const clearingAssigneeOnComplete =
         isMarkingTaskComplete(data) && oldTask.assigneeId != null;
       if (isMarkingTaskComplete(data)) {
@@ -765,9 +778,30 @@ export const taskRouter = createRouter({
         });
       }
 
+      if (data.dueDate !== undefined) {
+        const prevDue =
+          oldTask.dueDate instanceof Date
+            ? oldTask.dueDate.toISOString()
+            : oldTask.dueDate
+              ? new Date(oldTask.dueDate).toISOString()
+              : null;
+        const nextDue = data.dueDate ? new Date(data.dueDate).toISOString() : null;
+        if (prevDue !== nextDue) {
+          const dueMessage = nextDue
+            ? `${label} updated the deadline on "${taskTitle}" to ${formatDueLabel(nextDue)}`
+            : `${label} cleared the deadline on "${taskTitle}"`;
+          await notifyTaskStakeholders({
+            taskId: id,
+            actor: ctx.user,
+            type: "task_updated",
+            title: "Task deadline updated",
+            message: dueMessage,
+          });
+        }
+      }
+
       const otherFieldsChanged =
         (data.description !== undefined && data.description !== oldTask.description)
-        || (data.dueDate !== undefined)
         || (data.projectId !== undefined && data.projectId !== oldTask.projectId);
 
       if (
@@ -776,6 +810,7 @@ export const taskRouter = createRouter({
         && !data.stage
         && data.assigneeId === undefined
         && data.title === undefined
+        && data.dueDate === undefined
       ) {
         await notifyTaskMembers({
           taskId: id,
@@ -1354,6 +1389,64 @@ export const taskRouter = createRouter({
       return updated;
     }),
 
+  deleteTimeEntry: authedQuery
+    .input(z.object({
+      taskId: z.number(),
+      entryId: z.number(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (useTaskMock()) {
+        return mock.mockDeleteTaskTimeEntry(ctx.user, input);
+      }
+
+      await ensureSchema();
+      const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
+      if (!task) throw new Error("Task not found");
+
+      const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
+      const entry = await timeCol.findOne({ id: input.entryId, taskId: input.taskId });
+      if (!entry) throw new Error("Time entry not found");
+      if (!entry.clockOut) throw new Error("Cannot delete an active timer session");
+      if (!(await canEditTaskTimeEntry(ctx.user, task, entry))) {
+        throw new Error("Not allowed to delete this time entry");
+      }
+
+      const durationSeconds =
+        typeof entry.durationSeconds === "number" && entry.durationSeconds >= 0
+          ? entry.durationSeconds
+          : (entry.duration ?? 0) * 60;
+      const durationMinutes = Math.floor(durationSeconds / 60);
+      const now = new Date();
+      const currentActualHours = parseFloat(task.actualHours ?? "0") || 0;
+      const adjustedActualHours = currentActualHours - durationSeconds / 3600;
+
+      await timeCol.deleteOne({ id: input.entryId, taskId: input.taskId });
+      await updateById<TaskDoc>(Collections.tasks, input.taskId, {
+        actualHours: Math.max(0, adjustedActualHours).toFixed(2),
+        updatedAt: now,
+      });
+
+      await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
+        taskId: input.taskId,
+        userId: ctx.user.id,
+        action: "time_logged",
+        oldValue: null,
+        newValue: `Time entry deleted — ${durationMinutes} min`,
+        metadata: { entryId: input.entryId },
+        createdAt: now,
+      });
+
+      await notifyTaskMembers({
+        taskId: input.taskId,
+        actor: ctx.user,
+        type: "task_updated",
+        title: "Time entry deleted",
+        message: `${actorLabel(ctx.user)} deleted time logged on "${task.title}"`,
+      });
+
+      return { success: true as const };
+    }),
+
   addManualTimeEntry: authedQuery
     .input(z.object({
       taskId: z.number(),
@@ -1372,12 +1465,8 @@ export const taskRouter = createRouter({
       if (!task) throw new Error("Task not found");
 
       const targetUserId = input.userId ?? ctx.user.id;
-      const isManager = ctx.user.role === "admin" || ctx.user.role === "manager";
       const canManageTime = await canManageTaskTime(ctx.user, task);
-      if (targetUserId !== ctx.user.id && !isManager && !canManageTime) {
-        throw new Error("Not allowed to add time for this user");
-      }
-      if (!canManageTime && targetUserId !== ctx.user.id) {
+      if (!sameUserId(targetUserId, ctx.user.id) && !canManageTime) {
         throw new Error("Not allowed to add time for this user");
       }
 

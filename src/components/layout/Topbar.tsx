@@ -2,6 +2,8 @@ import { Menu } from "lucide-react";
 import { ProfileMenu } from "@/components/layout/ProfileMenu";
 import { NotificationMenu } from "@/components/layout/NotificationMenu";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
+import { useAuth } from "@/hooks/useAuth";
+import { isFinanceRoleOnly } from "@/lib/leave-policy";
 
 interface TopbarProps {
   sidebarWidth: number;
@@ -10,6 +12,9 @@ interface TopbarProps {
 }
 
 export function Topbar({ sidebarWidth, showMenuButton, onMenuClick }: TopbarProps) {
+  const { user } = useAuth();
+  const hideNotifications = isFinanceRoleOnly(user);
+
   return (
     <header
       className="fixed top-0 right-0 h-14 sm:h-16 bg-white dark:bg-[#111827] border-b border-gray-200 dark:border-gray-800 z-30 flex items-center justify-between gap-3 px-4 sm:px-6 transition-[left] duration-300"
@@ -30,7 +35,7 @@ export function Topbar({ sidebarWidth, showMenuButton, onMenuClick }: TopbarProp
 
       <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
         <ThemeToggle />
-        <NotificationMenu />
+        {!hideNotifications ? <NotificationMenu /> : null}
         <ProfileMenu />
       </div>
     </header>

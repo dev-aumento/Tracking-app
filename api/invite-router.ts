@@ -237,7 +237,7 @@ export const inviteRouter = createRouter({
           email: invite?.email ?? null,
           department: invite?.department ?? null,
           invitedByName: null,
-          organizationName: "AumentoX26",
+          organizationName: "FlowTicX",
           expired: false,
         };
       }
@@ -246,7 +246,7 @@ export const inviteRouter = createRouter({
       const invite = await getValidInvite(input.token);
       const organizationName = invite?.organizationId
         ? await getOrganizationNameById(invite.organizationId)
-        : "AumentoX26";
+        : "FlowTicX";
 
       if (!invite || invite.status !== "pending") {
         return {

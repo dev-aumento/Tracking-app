@@ -21,6 +21,8 @@ import type { OrganizationDoc, UserDoc } from "@db/mongo/types";
 import { TRPCError } from "@trpc/server";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { canManageNoticePeriod } from "@/lib/leave-policy";
+import type { SelfPersonalInfoUpdateInput } from "./queries/personal-info";
 
 const profileUpdateSchema = z.object({
   name: z.string().min(1).max(255).optional(),
@@ -46,7 +48,7 @@ export const authRouter = createRouter({
   me: publicQuery.query(({ ctx }) => ctx.user ?? null),
 
   organizationName: publicQuery.query(async ({ ctx }) => {
-    if (isAuthDisabled()) return { name: "AumentoX26" };
+    if (isAuthDisabled()) return { name: "FlowTicX" };
     try {
       await ensureSchema();
       if (ctx.user?.organizationId) {
@@ -54,7 +56,7 @@ export const authRouter = createRouter({
       }
       return { name: await getOrganizationName() };
     } catch {
-      return { name: "AumentoX26" };
+      return { name: "FlowTicX" };
     }
   }),
 
@@ -233,9 +235,13 @@ export const authRouter = createRouter({
       }
 
       const canManageHead = hasPermission(ctx.user, "profile.head_of_department");
+      const sanitized: SelfPersonalInfoUpdateInput = { ...input };
+      if (!canManageNoticePeriod(ctx.user)) {
+        delete sanitized.onNoticePeriod;
+      }
 
       if (isAuthDisabled()) {
-        const view = mock.mockUpdatePersonalInfo(ctx.user.id, input, {
+        const view = mock.mockUpdatePersonalInfo(ctx.user.id, sanitized, {
           includePrivateNotes: true,
         });
         if (!canManageHead) {
@@ -250,7 +256,7 @@ export const authRouter = createRouter({
 
       await ensureSchema();
 
-      const patch = buildPersonalInfoUserPatch(input, ctx.user);
+      const patch = buildPersonalInfoUserPatch(sanitized, ctx.user);
 
       const updated = await updateById<UserDoc>(Collections.users, ctx.user.id, patch);
       if (!updated) {
@@ -412,11 +418,81 @@ export const authRouter = createRouter({
       return { success: true };
     }),
 
+  registerFinance: publicQuery
+    .input(
+      z.object({
+        name: z.string().min(1).max(255),
+        email: z.string().email().max(320),
+        password: z.string().min(8).max(128),
+        organizationName: z.string().min(1).max(200),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      try {
+        await ensureSchema();
+      } catch (error) {
+        console.error("[auth] Database setup failed:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            "Database setup failed. Check MONGODB_URI and ensure MongoDB is reachable.",
+        });
+      }
+
+      const email = input.email.trim().toLowerCase();
+      const existing = await findUserByEmail(email);
+      if (existing) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "An account with this email already exists",
+        });
+      }
+
+      const passwordHash = await hashPassword(input.password);
+      const { firstName, lastName } = splitName(input.name);
+      const org = await createOrganization(input.organizationName, null);
+
+      const user = await createUser({
+        unionId: `finance_${nanoid()}`,
+        organizationId: org.id,
+        name: input.name.trim(),
+        email,
+        passwordHash,
+        avatar: null,
+        role: "finance",
+        status: "active" as UserDoc["status"],
+        department: "Finance",
+        position: "Account Manager",
+        phone: null,
+        firstName,
+        lastName,
+      });
+
+      await updateById<OrganizationDoc>(Collections.organizations, org.id, {
+        createdBy: user.id,
+        updatedAt: new Date(),
+      });
+
+      const token = await createSessionForUser(
+        user.id,
+        ctx.req.headers,
+        ctx.resHeaders,
+      );
+
+      return {
+        user: omitPasswordHash(user),
+        organizationName: org.name,
+        token,
+      };
+    }),
+
   login: publicQuery
     .input(
       z.object({
         email: z.string().email(),
         password: z.string().min(1),
+        /** When set to finance, only finance-role accounts may sign in. */
+        portal: z.enum(["finance"]).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -432,6 +508,21 @@ export const authRouter = createRouter({
           });
         }
 
+        // Heal account managers wrongly marked inactive by the old employee-list orphan logic.
+        if (
+          user.role === "finance" &&
+          String(user.status).toLowerCase() === "inactive"
+        ) {
+          const healed = await updateById<UserDoc>(Collections.users, user.id, {
+            status: "active",
+            updatedAt: new Date(),
+          });
+          if (healed) {
+            invalidateAuthUserCache(user.id);
+            Object.assign(user, healed);
+          }
+        }
+
         if (user.status !== "active") {
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -444,6 +535,20 @@ export const authRouter = createRouter({
           throw new TRPCError({
             code: "UNAUTHORIZED",
             message: "Invalid email or password",
+          });
+        }
+
+        if (input.portal === "finance" && user.role !== "finance") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "This portal is for account managers only. Use the main login instead.",
+          });
+        }
+
+        if (!input.portal && user.role === "finance") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Account managers sign in at /finance/login",
           });
         }
 

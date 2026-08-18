@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { TaskDetailPanel } from "@/components/tasks/TaskDetailPanel";
@@ -35,6 +35,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Plus } from "lucide-react";
 import { ListPaginationControls } from "@/components/shared/ListPaginationControls";
 import { LIST_PAGE_SIZE, paginateItems } from "@/lib/list-pagination";
+import { isNativeApp } from "@/lib/platform";
 
 const VALID_VIEWS: TaskView[] = ["list", "kanban"];
 
@@ -69,6 +70,15 @@ type TaskRow = {
 };
 
 export default function Tasks() {
+  const { taskKey, taskId: legacyTaskIdParam } = useParams();
+  if (isNativeApp() && !taskKey && !legacyTaskIdParam) {
+    return <Navigate to="/m/work?tab=my" replace />;
+  }
+
+  return <TasksWebPage />;
+}
+
+function TasksWebPage() {
   const navigate = useNavigate();
   const { taskId: legacyTaskIdParam, taskKey } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();

@@ -25,7 +25,7 @@ const bulkSelectContentClass =
   "rounded-xl border border-gray-200 bg-white shadow-lg p-1";
 
 const bulkSelectItemClass =
-  "rounded-lg text-sm text-gray-700 focus:bg-blue-50 focus:text-[#2563EB] data-[state=checked]:bg-blue-50 data-[state=checked]:text-[#2563EB] data-[state=checked]:font-medium";
+  "rounded-lg text-sm text-gray-700 focus:bg-blue-50 focus:text-[#2563EB] data-[state=checked]:bg-blue-50 data-[state=checked]:text-[#2563EB] data-[state=checked]:font-medium dark:focus:bg-[#1a2740] dark:focus:text-[#f3f4f6] dark:data-[state=checked]:bg-[#1a2740] dark:data-[state=checked]:text-[#f3f4f6]";
 
 interface TaskBulkActionBarProps {
   selectedCount: number;

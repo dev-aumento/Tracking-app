@@ -8,6 +8,8 @@ import { TaskKanbanBoard } from "@/components/tasks/TaskKanbanBoard";
 import { TaskListView } from "@/components/tasks/TaskListView";
 import { TaskDetailPanel } from "@/components/tasks/TaskDetailPanel";
 import { TaskSearchFilterPanel } from "@/components/tasks/TaskSearchFilterPanel";
+import { MobileTaskList } from "@/components/mobile/MobileTaskList";
+import { isNativeApp } from "@/lib/platform";
 import {
   CreateTaskModal,
   createEmptyTaskForm,
@@ -51,13 +53,17 @@ function parseProjectView(raw: string | null): ProjectTaskView {
   return "kanban";
 }
 
+const NATIVE_PROJECTS_PATH = "/m/work?tab=projects";
+
 export default function ProjectDetail() {
   const { id } = useParams();
   const projectId = Number(id);
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
+  const native = isNativeApp();
 
-  const taskView = parseProjectView(searchParams.get("view"));
+  const taskView = native ? "list" : parseProjectView(searchParams.get("view"));
+  const projectsBackPath = native ? NATIVE_PROJECTS_PATH : "/projects";
   const selectedTask = searchParams.get("task") ? Number(searchParams.get("task")) : null;
   const highlightActivityId = useMemo(
     () => parseActivityIdParam(searchParams.get("activity")),
@@ -441,7 +447,7 @@ export default function ProjectDetail() {
     return (
       <div className="py-16 text-center">
         <p className="text-gray-500">Invalid project.</p>
-        <Link to="/projects" className="text-[#2563EB] text-sm mt-2 inline-block">Back to projects</Link>
+        <Link to={projectsBackPath} className="text-[#2563EB] text-sm mt-2 inline-block">Back to projects</Link>
       </div>
     );
   }
@@ -458,13 +464,13 @@ export default function ProjectDetail() {
     return (
       <div className="py-16 text-center">
         <p className="text-gray-500">Project not found.</p>
-        <Link to="/projects" className="text-[#2563EB] text-sm mt-2 inline-block">Back to projects</Link>
+        <Link to={projectsBackPath} className="text-[#2563EB] text-sm mt-2 inline-block">Back to projects</Link>
       </div>
     );
   }
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4 overflow-x-hidden">
       <ProjectHeaderCard
         name={project.name}
         description={project.description}
@@ -482,6 +488,7 @@ export default function ProjectDetail() {
             : undefined
         }
         joinPending={joinProjectMutation.isPending}
+        backTo={projectsBackPath}
       />
 
       {!canViewTasks ? (
@@ -522,39 +529,41 @@ export default function ProjectDetail() {
           tasks={allTasks}
           searchInput={search}
           onSearchInputChange={setSearch}
-          className="max-w-none w-full"
+          className="max-w-none w-full min-w-0"
           onTaskSelect={handleTaskSearchSelect}
         />
 
-        <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-lg shrink-0 self-end sm:self-auto">
-          <button
-            type="button"
-            onClick={() => setTaskView("list")}
-            className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
-              taskView === "list"
-                ? "bg-white text-[#1F2937] shadow-sm"
-                : "text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            <List size={15} />
-            List
-          </button>
-          <button
-            type="button"
-            onClick={() => setTaskView("kanban")}
-            className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
-              taskView === "kanban"
-                ? "bg-white text-[#1F2937] shadow-sm"
-                : "text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            <LayoutGrid size={15} />
-            Kanban
-          </button>
-        </div>
+        {!native ? (
+          <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-lg shrink-0 self-end sm:self-auto">
+            <button
+              type="button"
+              onClick={() => setTaskView("list")}
+              className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
+                taskView === "list"
+                  ? "bg-white text-[#1F2937] shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <List size={15} />
+              List
+            </button>
+            <button
+              type="button"
+              onClick={() => setTaskView("kanban")}
+              className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
+                taskView === "kanban"
+                  ? "bg-white text-[#1F2937] shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <LayoutGrid size={15} />
+              Kanban
+            </button>
+          </div>
+        ) : null}
       </div>
 
-      {taskView === "list" && taskSelectionEnabled ? (
+      {taskView === "list" && taskSelectionEnabled && !native ? (
         <TaskBulkActionBar
           selectedCount={selectedIds.size}
           canBulkEdit={canBulkEdit}
@@ -580,7 +589,17 @@ export default function ProjectDetail() {
         />
       ) : null}
 
-      {taskView === "list" ? (
+      {native ? (
+        <MobileTaskList
+          tasks={filteredTasks}
+          isLoading={tasksLoading}
+          onTaskClick={openTask}
+          emptyMessage="No tasks in this project yet."
+          showProjectName={false}
+          stages={pipelineStages}
+          groupByStage
+        />
+      ) : taskView === "list" ? (
         <TaskListView
           tasks={filteredTasks}
           isLoading={tasksLoading}

@@ -4,7 +4,7 @@ import {
   countTodoTasks,
 } from "./dashboard-task-stats";
 import type { SafeUser } from "../queries/users";
-import { buildTimeStatsSummary, localDateKey, startOfCalendarWeek, periodClockInBounds, dayBounds, roundHours, attendanceEntrySeconds, getAutoClockOutDeadline, isPastAutoClockOutDeadline, computeAttendanceWorkSeconds, resolveAttendanceDisplaySeconds, filterMeaningfulAttendanceEntries } from "@/lib/work-hours-policy";
+import { buildTimeStatsSummary, localDateKey, startOfCalendarWeek, periodClockInBounds, dayBounds, roundHours, attendanceEntrySeconds, getAutoClockOutDeadline, isPastAutoClockOutDeadline, computeAttendanceWorkSeconds, resolveAttendanceDisplaySeconds, filterMeaningfulAttendanceEntries, sumBreakSecondsInWindow } from "@/lib/work-hours-policy";
 import { buildLeaveCoverageMap, eachLeaveDateKey, isAdminOrManagement, isWeekdayDateKey } from "@/lib/leave-policy";
 import {
   projectPerformancePercent,
@@ -69,6 +69,7 @@ const users: SafeUser[] = [
     panCard: null,
     notificationLanguage: "en",
     employmentType: "full_time",
+    onNoticePeriod: false,
     headOfDepartmentUserIds: [],
     permissions: [],
     createdAt: daysAgo(90),
@@ -102,6 +103,7 @@ const users: SafeUser[] = [
     panCard: null,
     notificationLanguage: "en",
     employmentType: "full_time",
+    onNoticePeriod: false,
     headOfDepartmentUserIds: [],
     permissions: [],
     createdAt: daysAgo(60),
@@ -753,6 +755,7 @@ function mockNotifyTaskMembers({
   extraRecipientIds = [],
   excludeUserIds = [],
   includeAssignee = true,
+  includeHrRecipients = false,
 }: {
   taskId: number;
   actor: SafeUser;
@@ -763,15 +766,17 @@ function mockNotifyTaskMembers({
   extraRecipientIds?: number[];
   excludeUserIds?: number[];
   includeAssignee?: boolean;
+  includeHrRecipients?: boolean;
 }) {
   const task = tasks.find((t) => t.id === taskId);
-  const excluded = new Set([actor.id, ...excludeUserIds]);
+  const excluded = new Set([actor.id, ...excludeUserIds].map(Number));
   const recipientIds = new Set<number>();
   if (includeAssignee && task?.assigneeId != null) recipientIds.add(task.assigneeId);
-  for (const id of extraRecipientIds) recipientIds.add(id);
+  for (const id of extraRecipientIds) recipientIds.add(Number(id));
 
   const recipients = [...recipientIds].filter((id) => {
     if (excluded.has(id)) return false;
+    if (includeHrRecipients) return true;
     const recipient = users.find((u) => u.id === id);
     if (!recipient) return true;
     // Keep mock aligned with production: HR department users skip task alerts.
@@ -1093,6 +1098,57 @@ export function mockUpdateTaskTimeEntry(
   return entry;
 }
 
+export function mockDeleteTaskTimeEntry(
+  actor: SafeUser,
+  input: {
+    taskId: number;
+    entryId: number;
+  },
+) {
+  const list = taskTimeEntries[input.taskId];
+  if (!list) throw new Error("Time entry not found");
+  const index = list.findIndex((e) => e.id === input.entryId);
+  if (index < 0) throw new Error("Time entry not found");
+  const entry = list[index];
+  if (!entry.clockOut) throw new Error("Cannot delete an active timer session");
+
+  const durationSeconds =
+    typeof entry.durationSeconds === "number" && entry.durationSeconds >= 0
+      ? entry.durationSeconds
+      : (entry.duration ?? 0) * 60;
+  const durationMinutes = Math.floor(durationSeconds / 60);
+
+  list.splice(index, 1);
+
+  const activities = taskActivities[input.taskId] ?? (taskActivities[input.taskId] = []);
+  activities.unshift({
+    id: Date.now(),
+    taskId: input.taskId,
+    userId: actor.id,
+    action: "time_logged",
+    oldValue: null,
+    newValue: `Time entry deleted — ${durationMinutes} min`,
+    metadata: { entryId: input.entryId },
+    createdAt: new Date(),
+    user: actor,
+  });
+
+  const task = tasks.find((t) => t.id === input.taskId);
+  if (task) {
+    const currentActualHours = parseFloat(task.actualHours ?? "0") || 0;
+    task.actualHours = Math.max(0, currentActualHours - durationSeconds / 3600).toFixed(2);
+  }
+  mockNotifyTaskMembers({
+    taskId: input.taskId,
+    actor,
+    type: "task_updated",
+    title: "Time entry deleted",
+    message: `${mockActorLabel(actor)} deleted time logged on "${task?.title ?? "a task"}"`,
+  });
+
+  return { success: true as const };
+}
+
 export function mockAddManualTaskTimeEntry(
   actor: SafeUser,
   input: {
@@ -1243,15 +1299,16 @@ export function mockGetMyActiveTaskTimer(userId: number) {
 function mockCanManageTaskTime(actor: SafeUser, taskId: number) {
   const task = tasks.find((t) => t.id === taskId);
   if (!task) return false;
+  const uid = Number(actor.id);
   if (
     actor.role === "admin"
     || actor.role === "manager"
-    || task.createdBy === actor.id
-    || task.assigneeId === actor.id
+    || Number(task.createdBy) === uid
+    || Number(task.assigneeId) === uid
   ) {
     return true;
   }
-  return (taskParticipants[taskId] ?? []).some((p) => p.id === actor.id);
+  return (taskParticipants[taskId] ?? []).some((p) => Number(p.id) === uid);
 }
 
 export function mockStartTaskTimer(
@@ -1459,6 +1516,7 @@ export function mockAddTaskComment(taskId: number, message: string, actor: SafeU
       activityId: activity.id,
       extraRecipientIds: mentionedUserIds,
       includeAssignee: false,
+      includeHrRecipients: true,
     });
   } else {
     mockNotifyTaskMembers({
@@ -1499,6 +1557,27 @@ export function mockEditTaskComment(
     editedAt: new Date().toISOString(),
   };
   task.updatedAt = new Date();
+
+  const previousMentionIds = new Set(
+    extractMentionedUserIdsFromComment(activity.oldValue ?? ""),
+  );
+  const nextMentionIds = extractMentionedUserIdsFromComment(message);
+  const newlyMentioned = nextMentionIds.filter((id) => !previousMentionIds.has(id));
+  if (newlyMentioned.length > 0) {
+    const previewSource = richCommentPlainText(message) || formatCommentPreview(message);
+    const preview = previewSource.length > 120 ? `${previewSource.slice(0, 120)}…` : previewSource;
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "mention",
+      title: "You were mentioned in a comment",
+      message: `${mockActorLabel(actor)} mentioned you on "${task.title}": ${preview}`,
+      activityId: activity.id,
+      extraRecipientIds: newlyMentioned,
+      includeAssignee: false,
+      includeHrRecipients: true,
+    });
+  }
 
   return activity;
 }
@@ -2068,8 +2147,21 @@ export function mockRemoveObserver(taskId: number, userId: number) {
   return { success: true };
 }
 
-export function mockProjectList(currentUserId = DEV_USER.id) {
-  return projects.map((p) => {
+export function mockProjectList(
+  currentUserId = DEV_USER.id,
+  options?: { status?: string; joinedOnly?: boolean },
+) {
+  let source = projects;
+  if (options?.status) {
+    source = source.filter((p) => p.status === options.status);
+  }
+  if (options?.joinedOnly) {
+    source = source.filter((p) =>
+      mockIsProjectMember(p.id, currentUserId, p.createdBy),
+    );
+  }
+
+  return source.map((p) => {
     const projectTasks = tasks.filter((t) => t.projectId === p.id);
     const memberMap = new Map<number, SafeUser>();
     for (const t of projectTasks) {
@@ -2517,7 +2609,7 @@ export function mockReorderUsers(orderedIds: number[]) {
 export function mockAdminUpdateUser(input: {
   id: number;
   name?: string;
-  role?: "admin" | "manager" | "employee" | "hr" | "client";
+  role?: "admin" | "manager" | "employee" | "hr" | "client" | "finance";
   status?: "active" | "inactive" | "suspended";
   department?: string | null;
   position?: string | null;
@@ -2614,6 +2706,7 @@ function mockPersonalRecord(
     sex: user.sex ?? null,
     notificationLanguage: user.notificationLanguage ?? "en",
     employmentType: user.employmentType === "intern" ? "intern" : "full_time",
+    onNoticePeriod: Boolean(user.onNoticePeriod),
     headOfDepartmentUserIds: headIds,
     headsOfDepartment: headIds
       .map((id) => userById(id))
@@ -2666,6 +2759,9 @@ export function mockUpdatePersonalInfo(
   }
   if (data.employmentType !== undefined) {
     user.employmentType = data.employmentType;
+  }
+  if (data.onNoticePeriod !== undefined) {
+    user.onNoticePeriod = data.onNoticePeriod;
   }
   if (data.headOfDepartmentUserIds !== undefined) {
     user.headOfDepartmentUserIds = data.headOfDepartmentUserIds;
@@ -3202,12 +3298,17 @@ function mockDayEntriesForUser(userId: number, dateStr: string, now = new Date()
     (sum, entry) => sum + (entry.durationSeconds ?? 0),
     0,
   );
+  const dayBreaks = mockFindBreaksOverlappingWindow(userId, start, end);
+  const breakSeconds = sumBreakSecondsInWindow(dayBreaks, start, end, now);
 
   return {
     entries: enrichedEntries,
     totalMinutes: totalSeconds / 60,
     totalSeconds,
     totalHours: roundHours(totalSeconds / 3600),
+    breakSeconds,
+    breakMinutes: Math.floor(breakSeconds / 60),
+    breakHours: roundHours(breakSeconds / 3600),
     entriesCount: enrichedEntries.length,
   };
 }
@@ -3745,6 +3846,8 @@ export function mockTeamHours(input?: { date?: string; startDate?: string; endDa
       avatar: user.avatar,
       role: user.role,
       totalHours: day.totalHours,
+      breakHours: day.breakHours,
+      breakSeconds: day.breakSeconds,
       entriesCount: day.entriesCount,
     };
   });
@@ -3801,6 +3904,38 @@ export function mockActiveClockIns() {
         workElapsedSeconds: workSessionTiming(session).workElapsedSeconds,
       };
     });
+}
+
+export function mockUpcomingBirthdays() {
+  const todayLabel = new Date().toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+  });
+  const inDaysLabel = (n: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + n);
+    return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  };
+  return [
+    {
+      id: 2,
+      name: "Sarah Chen",
+      avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah",
+      position: "Engineering Lead",
+      daysLeft: 0,
+      dateLabel: todayLabel,
+      isToday: true,
+    },
+    {
+      id: 4,
+      name: "Emily Rodriguez",
+      avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Emily",
+      position: "Frontend Developer",
+      daysLeft: 12,
+      dateLabel: inDaysLabel(12),
+      isToday: false,
+    },
+  ];
 }
 
 export function mockHrDashboard() {
@@ -3940,16 +4075,36 @@ export function mockHrDashboard() {
           year: "numeric",
         }),
       })),
-    upcomingBirthdays: [] as Array<{
-      id: number;
-      name: string;
-      avatar: string | null;
-      position: string;
-      daysLeft: number;
-      dateLabel: string;
-    }>,
+    upcomingBirthdays: mockUpcomingBirthdays(),
+    projectOverview: {
+      total: 18,
+      byStatus: [
+        { name: "Completed", count: 8, percent: 44, color: "#2563EB" },
+        { name: "In Progress", count: 7, percent: 39, color: "#3B82F6" },
+        { name: "On Hold", count: 2, percent: 11, color: "#F59E0B" },
+        { name: "Overdue", count: 1, percent: 6, color: "#EF4444" },
+      ],
+    },
+    monthMetrics: {
+      totalHoursLogged: 214.5,
+      totalHoursDeltaPct: 8,
+      trackedHours: 198,
+      trackedHoursPct: 92,
+      trackedHoursDeltaPct: 5,
+      billableHours: 162.3,
+      billablePct: 76,
+      teamUtilizationPct: 78,
+      utilizationDeltaPct: 5,
+      pendingInvoicesAmount: 6250,
+      pendingInvoicesCount: 2,
+      revenueThisMonth: 28450,
+      revenueDeltaPct: 12,
+      currency: "USD",
+    },
   };
 }
+
+export { mockFinanceDashboard } from "./mock-finance-dashboard";
 
 export function mockLeaveSummary() {
   const data = mockHrDashboard();
@@ -3957,6 +4112,7 @@ export function mockLeaveSummary() {
     leaveMonthLabel: data.leaveMonthLabel,
     upcomingLeaves: data.upcomingLeaves,
     upcomingWfh: data.upcomingWfh,
+    upcomingBirthdays: data.upcomingBirthdays,
   };
 }
 
@@ -4016,9 +4172,10 @@ export function mockDeleteTaskAttachment(id: number) {
 
 import {
   TOTAL_PAID_LEAVES,
-  TOTAL_SICK_LEAVES,
   accruedPaidLeavesForYear,
   annualPaidLeaveEntitlement,
+  annualSickLeaveEntitlement,
+  annualWfhEntitlement,
   canCancelLeaveRequest,
   canEditLeaveRequest,
   consumesPaidBalance,
@@ -4067,8 +4224,10 @@ function mockComputeLeaveUsage(
   );
   let approvedPaid = 0;
   let approvedSick = 0;
+  let approvedWfh = 0;
   let pendingPaid = 0;
   let pendingSick = 0;
+  let pendingWfh = 0;
   for (const req of requests) {
     const units = leaveDaysInYear(
       req.startDate,
@@ -4084,29 +4243,52 @@ function mockComputeLeaveUsage(
     } else if (consumesSickBalance(req.leaveType)) {
       if (req.status === "approved") approvedSick += units;
       else pendingSick += units;
+    } else if (isWorkFromHomeLeave(req.leaveType)) {
+      if (req.status === "approved") approvedWfh += units;
+      else pendingWfh += units;
     }
   }
   const usedPaid = approvedPaid + pendingPaid;
   const usedSick = approvedSick + pendingSick;
+  const usedWfh = approvedWfh + pendingWfh;
   const dateOfJoining = userById(userId)?.dateOfJoining ?? null;
   const joiningKey = toJoiningDateKey(dateOfJoining);
   const employmentType = resolveEmploymentType(userById(userId));
-  const paidAccrued = accruedPaidLeavesForYear(year, new Date(), joiningKey, employmentType);
-  const paidAnnual = annualPaidLeaveEntitlement(year, joiningKey, employmentType);
+  const onNoticePeriod = Boolean(userById(userId)?.onNoticePeriod);
+  const paidAccrued = accruedPaidLeavesForYear(
+    year,
+    new Date(),
+    joiningKey,
+    employmentType,
+    onNoticePeriod,
+  );
+  const paidAnnual = annualPaidLeaveEntitlement(
+    year,
+    joiningKey,
+    employmentType,
+    onNoticePeriod,
+  );
+  const sickTotal = annualSickLeaveEntitlement(year, joiningKey);
+  const wfhTotal = annualWfhEntitlement(year, joiningKey);
   return {
     year,
     paidTotal: paidAccrued,
     paidAnnualTotal: paidAnnual,
-    sickTotal: TOTAL_SICK_LEAVES,
+    sickTotal,
+    wfhTotal,
     paidRemaining: roundLeaveUnits(Math.max(0, paidAccrued - usedPaid)),
-    sickRemaining: roundLeaveUnits(Math.max(0, TOTAL_SICK_LEAVES - usedSick)),
+    sickRemaining: roundLeaveUnits(Math.max(0, sickTotal - usedSick)),
+    wfhRemaining: roundLeaveUnits(Math.max(0, wfhTotal - usedWfh)),
     paidUsed: roundLeaveUnits(approvedPaid),
     sickUsed: roundLeaveUnits(approvedSick),
+    wfhUsed: roundLeaveUnits(approvedWfh),
     paidPending: roundLeaveUnits(pendingPaid),
     sickPending: roundLeaveUnits(pendingSick),
+    wfhPending: roundLeaveUnits(pendingWfh),
     usedLeaves: roundLeaveUnits(approvedPaid + approvedSick),
     dateOfJoining: joiningKey ?? dateOfJoining,
     employmentType,
+    onNoticePeriod,
     inProbation: isInProbationPeriod(joiningKey, new Date(), employmentType),
     paidLeaveLockLabel: paidLeaveLockPeriodLabel(employmentType),
   };
@@ -4121,7 +4303,11 @@ function mockAssertYearScopedBalance(params: {
   excludeRequestId?: number;
   forEmployee?: boolean;
 }) {
-  if (!consumesPaidBalance(params.leaveType) && !consumesSickBalance(params.leaveType)) {
+  if (
+    !consumesPaidBalance(params.leaveType) &&
+    !consumesSickBalance(params.leaveType) &&
+    !isWorkFromHomeLeave(params.leaveType)
+  ) {
     return;
   }
 
@@ -4144,7 +4330,9 @@ function mockAssertYearScopedBalance(params: {
     });
     const remaining = consumesPaidBalance(params.leaveType)
       ? usage.paidRemaining
-      : usage.sickRemaining;
+      : consumesSickBalance(params.leaveType)
+        ? usage.sickRemaining
+        : usage.wfhRemaining;
 
     if (needed > remaining) {
       throw new Error(
@@ -4543,6 +4731,34 @@ export function mockListLeaveRequests() {
   };
 }
 
+export function mockUpdateLeaveDetails(
+  _reviewerId: number,
+  input: {
+    id: number;
+    reason: string;
+    reviewNote?: string | null;
+  },
+) {
+  const existing = leaveRequests.find((r) => r.id === input.id);
+  if (!existing) throw new Error("Leave request not found");
+
+  const isWfh = isWorkFromHomeLeave(existing.leaveType);
+  const nextReason = input.reason.trim();
+  if (!isWfh && nextReason.length < 3) {
+    throw new Error("Please enter a reason (at least 3 characters)");
+  }
+
+  existing.reason = isWfh
+    ? nextReason || existing.reason || "Work from home"
+    : nextReason;
+  if (input.reviewNote !== undefined) {
+    existing.reviewNote = input.reviewNote?.trim() || null;
+  }
+  existing.updatedAt = new Date();
+
+  return { request: { ...existing } };
+}
+
 export function mockReviewLeave(
   reviewerId: number,
   input: {
@@ -4815,4 +5031,222 @@ export function mockSetLeaveUsageOverride(
   };
   leaveUsageOverrides.push(override);
   return { override: { ...override } };
+}
+
+// ─── Work locations (geofences) ───────────────────────────────────────────────
+
+import type { WorkLocationDoc } from "@db/mongo/types";
+import { DEFAULT_LOCATION_RADIUS_M } from "@/lib/geofence";
+
+let nextWorkLocationId = 1;
+const workLocations: WorkLocationDoc[] = [];
+
+export function mockListWorkLocations(options?: { includeArchived?: boolean }) {
+  return workLocations
+    .filter((l) => (options?.includeArchived ? true : !l.archived))
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((l) => ({ ...l }));
+}
+
+export function mockListActiveWorkLocations() {
+  return workLocations
+    .filter((l) => !l.archived)
+    .map((l) => ({
+      id: l.id,
+      name: l.name,
+      latitude: l.latitude,
+      longitude: l.longitude,
+      radiusMeters: l.radiusMeters,
+    }));
+}
+
+/** Approved WFH covering dateKey (YYYY-MM-DD) — clock-in may skip geofence. */
+export function mockHasApprovedWfhOnDate(userId: number, dateKey: string): boolean {
+  return leaveRequests.some(
+    (l) =>
+      l.userId === userId &&
+      l.status === "approved" &&
+      isWorkFromHomeLeave(l.leaveType) &&
+      l.startDate <= dateKey &&
+      l.endDate >= dateKey,
+  );
+}
+
+export function mockCreateWorkLocation(input: {
+  name: string;
+  address: string | null;
+  latitude: number;
+  longitude: number;
+  radiusMeters?: number;
+  createdBy: number;
+}) {
+  const now = new Date();
+  const doc: WorkLocationDoc = {
+    id: nextWorkLocationId++,
+    organizationId: 1,
+    name: input.name.trim(),
+    address: input.address,
+    latitude: input.latitude,
+    longitude: input.longitude,
+    radiusMeters: input.radiusMeters ?? DEFAULT_LOCATION_RADIUS_M,
+    archived: false,
+    createdBy: input.createdBy,
+    createdAt: now,
+    updatedAt: now,
+  };
+  workLocations.push(doc);
+  return { ...doc };
+}
+
+export function mockUpdateWorkLocation(
+  id: number,
+  patch: {
+    name: string;
+    address: string | null;
+    latitude: number;
+    longitude: number;
+    radiusMeters: number;
+  },
+) {
+  const existing = workLocations.find((l) => l.id === id);
+  if (!existing) throw new Error("Location not found");
+  existing.name = patch.name.trim();
+  existing.address = patch.address;
+  existing.latitude = patch.latitude;
+  existing.longitude = patch.longitude;
+  existing.radiusMeters = patch.radiusMeters;
+  existing.updatedAt = new Date();
+  return { ...existing };
+}
+
+export function mockSetWorkLocationArchived(id: number, archived: boolean) {
+  const existing = workLocations.find((l) => l.id === id);
+  if (!existing) throw new Error("Location not found");
+  existing.archived = archived;
+  existing.updatedAt = new Date();
+  return { ...existing };
+}
+
+export function mockDeleteWorkLocation(id: number) {
+  const idx = workLocations.findIndex((l) => l.id === id);
+  if (idx < 0) throw new Error("Location not found");
+  workLocations.splice(idx, 1);
+  return { ok: true as const };
+}
+
+// ─── Org attendance QR ───────────────────────────────────────────────────────
+
+import type {
+  OrgAttendanceQrActivityAction,
+  OrgAttendanceQrActivityDoc,
+  OrgAttendanceQrDoc,
+} from "@db/mongo/types";
+import { nanoid } from "nanoid";
+
+let nextOrgQrId = 1;
+let nextOrgQrActivityId = 1;
+const orgAttendanceQrs: OrgAttendanceQrDoc[] = [];
+const orgAttendanceQrActivities: OrgAttendanceQrActivityDoc[] = [];
+
+function toPublicOrgQr(doc: OrgAttendanceQrDoc) {
+  return {
+    token: doc.token,
+    payload: `aumento-attendance:${doc.token}`,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  };
+}
+
+function toPublicOrgQrActivity(doc: OrgAttendanceQrActivityDoc) {
+  return {
+    id: doc.id,
+    action: doc.action,
+    userId: doc.userId,
+    userName: doc.userName,
+    createdAt: doc.createdAt,
+  };
+}
+
+function pushOrgQrActivity(params: {
+  organizationId: number;
+  action: OrgAttendanceQrActivityAction;
+  userId: number;
+  userName: string;
+}) {
+  const doc: OrgAttendanceQrActivityDoc = {
+    id: nextOrgQrActivityId++,
+    organizationId: params.organizationId,
+    action: params.action,
+    userId: params.userId,
+    userName: params.userName,
+    createdAt: new Date(),
+  };
+  orgAttendanceQrActivities.push(doc);
+  return toPublicOrgQrActivity(doc);
+}
+
+export function mockGetOrgAttendanceQr(organizationId: number) {
+  const doc = orgAttendanceQrs.find((q) => q.organizationId === organizationId);
+  return doc ? toPublicOrgQr(doc) : null;
+}
+
+export function mockListOrgAttendanceQrActivity(organizationId: number) {
+  return orgAttendanceQrActivities
+    .filter((a) => a.organizationId === organizationId)
+    .slice()
+    .sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      return byTime !== 0 ? byTime : b.id - a.id;
+    })
+    .slice(0, 50)
+    .map(toPublicOrgQrActivity);
+}
+
+export function mockGenerateOrgAttendanceQr(
+  organizationId: number,
+  updatedBy: number,
+  userName: string,
+  action: "created" | "regenerated",
+) {
+  const now = new Date();
+  const existing = orgAttendanceQrs.find((q) => q.organizationId === organizationId);
+  let qr: ReturnType<typeof toPublicOrgQr>;
+  if (existing) {
+    existing.token = nanoid(40);
+    existing.updatedBy = updatedBy;
+    existing.updatedAt = now;
+    qr = toPublicOrgQr(existing);
+  } else {
+    const doc: OrgAttendanceQrDoc = {
+      id: nextOrgQrId++,
+      organizationId,
+      token: nanoid(40),
+      updatedBy,
+      createdAt: now,
+      updatedAt: now,
+    };
+    orgAttendanceQrs.push(doc);
+    qr = toPublicOrgQr(doc);
+  }
+  pushOrgQrActivity({
+    organizationId,
+    action,
+    userId: updatedBy,
+    userName,
+  });
+  return qr;
+}
+
+export function mockRecordOrgAttendanceQrDownload(
+  organizationId: number,
+  userId: number,
+  userName: string,
+) {
+  return pushOrgQrActivity({
+    organizationId,
+    action: "downloaded",
+    userId,
+    userName,
+  });
 }

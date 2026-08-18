@@ -1,7 +1,14 @@
 import { ROUTE_PERMISSIONS } from "@contracts/permissions";
-import { isHrDepartmentUser, isHrRestrictedPath } from "@/lib/leave-policy";
+import {
+  isFinanceRoleOnly,
+  isFinanceRestrictedPath,
+  isHrDepartmentUser,
+  isHrRestrictedPath,
+  isHrUser,
+} from "@/lib/leave-policy";
+import { isNativeApp } from "@/lib/platform";
 
-export type AppRole = "admin" | "manager" | "employee" | "hr" | "client";
+export type AppRole = "admin" | "manager" | "employee" | "hr" | "client" | "finance";
 
 type PermissionUser = {
   role: AppRole;
@@ -25,7 +32,25 @@ export function hasAnyPermission(
 /** First route a user can open after login (clients have no dashboard). */
 export function getDefaultHomePath(user: PermissionUser | null | undefined): string {
   if (!user) return "/";
-  const candidates = ["/", "/projects", "/admin/tasks", "/tasks"];
+
+  if (isNativeApp()) {
+    // Native app opens on the home dashboard when available.
+    if (canAccessRoute(user, "/")) return "/";
+    if (isHrUser(user)) return "/leave-management";
+    if (isFinanceRoleOnly(user) && canAccessRoute(user, "/admin/invoices")) {
+      return "/admin/invoices";
+    }
+    if (
+      canAccessRoute(user, "/tasks") ||
+      canAccessRoute(user, "/admin/tasks") ||
+      canAccessRoute(user, "/projects")
+    ) {
+      return "/m/work?tab=my";
+    }
+    return "/m/menu";
+  }
+
+  const candidates = ["/", "/admin/invoices", "/admin/customers", "/projects", "/admin/tasks", "/tasks"];
   for (const path of candidates) {
     if (canAccessRoute(user, path)) return path;
   }
@@ -37,6 +62,8 @@ function isClientRestrictedPath(path: string): boolean {
   if (path === "/leaves" || path.startsWith("/leaves")) return true;
   if (path === "/leave-management" || path.startsWith("/leave-management")) return true;
   if (path === "/attendance-management" || path.startsWith("/attendance-management")) return true;
+  if (path === "/locations" || path.startsWith("/locations")) return true;
+  if (path === "/qr-code" || path.startsWith("/qr-code")) return true;
   if (path === "/recent-employees" || path.startsWith("/recent-employees")) return true;
   if (path === "/time-tracking" || path.startsWith("/time-tracking")) return true;
   if (path === "/analytics" || path.startsWith("/analytics")) return true;
@@ -52,8 +79,20 @@ export function canAccessRoute(user: PermissionUser | null | undefined, path: st
     return false;
   }
 
+  if (isFinanceRoleOnly(user) && isFinanceRestrictedPath(path)) {
+    return false;
+  }
+
   if (user?.role === "client" && isClientRestrictedPath(path)) {
     return false;
+  }
+
+  // Project managers can open the employees directory (notice period + directory view).
+  if (
+    (path === "/admin/employees" || path.startsWith("/admin/employees")) &&
+    String(user?.role ?? "").toLowerCase() === "manager"
+  ) {
+    return true;
   }
 
   const exact = ROUTE_PERMISSIONS[path];
@@ -64,7 +103,7 @@ export function canAccessRoute(user: PermissionUser | null | undefined, path: st
   }
 
   if (path.startsWith("/projects/")) {
-    if (isHrDepartmentUser(user)) return false;
+    if (isHrDepartmentUser(user) || isFinanceRoleOnly(user)) return false;
     return hasAnyPermission(user, ["projects.view", "projects.manage"]);
   }
 
@@ -79,10 +118,29 @@ export function canAccessRoute(user: PermissionUser | null | undefined, path: st
     return canAccessRoute(user, "/admin/tasks");
   }
 
+  if (path.startsWith("/admin/invoices") || path.startsWith("/admin/customers")) {
+    const permission = path.startsWith("/admin/invoices")
+      ? "invoices.manage"
+      : "customers.manage";
+    return hasPermission(user, permission);
+  }
+
+  if (path.startsWith("/finance/") || path === "/finance") {
+    const role = String(user?.role ?? "").toLowerCase();
+    return role === "finance" || role === "admin";
+  }
+
   if (path.startsWith("/admin/")) {
     const role = String(user?.role ?? "").toLowerCase();
-    return role === "admin" || role === "manager" || role === "hr";
+    return role === "admin" || role === "manager" || role === "hr" || role === "finance";
   }
 
   return true;
+}
+
+/** Login path for the signed-in (or last-known) user. */
+export function getLoginPathForUser(
+  user: { role?: string | null } | null | undefined,
+): string {
+  return isFinanceRoleOnly(user) ? "/finance/login" : "/login";
 }

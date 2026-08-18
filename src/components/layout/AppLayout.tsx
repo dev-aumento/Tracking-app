@@ -6,8 +6,19 @@ import { AppToaster } from "@/components/ui/app-toaster";
 import { TaskNotificationToasts } from "@/components/notifications/TaskNotificationToasts";
 import { SidebarWidthContext } from "@/hooks/useSidebarWidth";
 import { getSidebarWidth, useLayoutMode } from "@/hooks/use-layout-mode";
+import { isNativeApp } from "@/lib/platform";
+import { MobileAppLayout } from "@/components/mobile/MobileAppLayout";
+import { GeofenceAutoClockOut } from "@/hooks/useGeofenceAutoClockOut";
 
 export function AppLayout() {
+  if (isNativeApp()) {
+    return <MobileAppLayout />;
+  }
+
+  return <WebAppLayout />;
+}
+
+function WebAppLayout() {
   const layoutMode = useLayoutMode();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -22,6 +33,7 @@ export function AppLayout() {
   return (
     <SidebarWidthContext.Provider value={sidebarWidth}>
       <div className="min-h-screen bg-[#F8F9FA] dark:bg-[#0b1220]">
+        <GeofenceAutoClockOut />
         <Sidebar
           collapsed={sidebarCollapsed}
           onToggle={() => setSidebarCollapsed((value) => !value)}

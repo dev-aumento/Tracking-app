@@ -1,4 +1,4 @@
-export type UserRole = "admin" | "manager" | "employee" | "hr" | "client";
+export type UserRole = "admin" | "manager" | "employee" | "hr" | "client" | "finance";
 export type UserStatus = "active" | "inactive" | "suspended" | "Active" | "Inactive" | "Suspended";
 export type EmploymentType = "full_time" | "intern";
 export type SexOption = "male" | "female" | "other" | "prefer_not_to_say";
@@ -47,10 +47,49 @@ export type LeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type TimeApprovalType = "clock_in" | "break";
 export type TimeApprovalStatus = "pending" | "approved" | "rejected";
 
+/** Billing / invoice company profile shared by admin and finance for the tenant. */
+export type OrganizationBillingProfile = {
+  logoDataUrl: string | null;
+  name: string;
+  industry: string;
+  businessType: string;
+  location: string;
+  addressLine1: string;
+  addressLine2: string;
+  city: string;
+  zip: string;
+  state: string;
+  phone: string;
+  fax: string;
+  website: string;
+  differentPaymentAddress: boolean;
+  paymentAddressLine1: string;
+  paymentAddressLine2: string;
+  paymentCity: string;
+  paymentZip: string;
+  paymentState: string;
+  paymentCountry: string;
+  paymentPhone: string;
+  primaryContactName: string;
+  primaryContactEmail: string;
+  baseCurrency: string;
+  fiscalYear: string;
+  language: string;
+  timeZone: string;
+  dateFormat: string;
+  companyIdType: string;
+  companyIdValue: string;
+  taxIdType: string;
+  taxIdValue: string;
+  additionalFields: Array<{ id: string; label: string; value: string }>;
+};
+
 /** Tenant / workspace that owns users, projects, tasks, and related data. */
 export type OrganizationDoc = {
   id: number;
   name: string;
+  /** Company details used on invoices (admin-maintained, shared with finance). */
+  billingProfile?: OrganizationBillingProfile | null;
   createdBy: number | null;
   createdAt: Date;
   updatedAt: Date;
@@ -94,6 +133,11 @@ export type UserDoc = {
    * `full_time` (default) → 3-month probation no-PL window.
    */
   employmentType: EmploymentType;
+  /**
+   * When true, employee is serving notice. Current + future months get no paid leave.
+   * Editable by admin, HR, and project managers (manager role).
+   */
+  onNoticePeriod: boolean;
   headOfDepartmentUserIds: number[];
   permissions: string[];
   /** Manual order on the Employees admin list (lower = higher). */
@@ -148,6 +192,7 @@ export type EmployeeDoc = {
   panCard: string | null;
   notificationLanguage: string | null;
   employmentType: EmploymentType;
+  onNoticePeriod: boolean;
   headOfDepartmentUserIds: number[];
   status: UserStatus;
   permissions: string[];
@@ -381,6 +426,49 @@ export type PublicHolidayDoc = {
   updatedAt: Date;
 };
 
+/** Office / site geofence used to restrict employee clock-in. */
+export type WorkLocationDoc = {
+  id: number;
+  organizationId: number | null;
+  name: string;
+  address: string | null;
+  latitude: number;
+  longitude: number;
+  /** Geofence radius in meters. */
+  radiusMeters: number;
+  archived: boolean;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+/** One attendance QR token per organization (printed / downloaded by HR/admin). */
+export type OrgAttendanceQrDoc = {
+  id: number;
+  organizationId: number;
+  /** High-entropy secret encoded in the QR. */
+  token: string;
+  updatedBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type OrgAttendanceQrActivityAction =
+  | "created"
+  | "regenerated"
+  | "downloaded";
+
+/** Audit trail for org attendance QR actions (HR/admin). */
+export type OrgAttendanceQrActivityDoc = {
+  id: number;
+  organizationId: number;
+  action: OrgAttendanceQrActivityAction;
+  userId: number;
+  /** Display name snapshot at the time of the action. */
+  userName: string;
+  createdAt: Date;
+};
+
 /**
  * Manual monthly leave usage set by HR/admin.
  * Effective paid days used = max(auto from approved leaves, paidDaysUsed).
@@ -509,6 +597,133 @@ export type InvoiceDoc = {
   updatedAt: Date;
 };
 
+export type BankAccountDoc = {
+  id: number;
+  organizationId: number;
+  name: string;
+  bankName: string;
+  accountNumber: string;
+  accountType: "current" | "savings" | "cash" | "other";
+  currency: string;
+  openingBalance: number;
+  currentBalance: number;
+  ifscOrSwift: string;
+  branch: string;
+  isActive: boolean;
+  notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type LedgerAccountType = "asset" | "liability" | "equity" | "income" | "expense";
+
+export type LedgerAccountDoc = {
+  id: number;
+  organizationId: number;
+  code: string;
+  name: string;
+  type: LedgerAccountType;
+  description: string;
+  isSystem: boolean;
+  isActive: boolean;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type EstimateDoc = {
+  id: number;
+  organizationId: number;
+  estimateNumber: string;
+  customerId: number | null;
+  customerName: string;
+  estimateDate: string;
+  validUntil: string;
+  currency: string;
+  items: InvoiceLineItemDoc[];
+  notes: string;
+  taxPercent: number;
+  adjustment: number;
+  status: "draft" | "sent" | "accepted" | "declined" | "converted";
+  convertedInvoiceId: number | null;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type PaymentDoc = {
+  id: number;
+  organizationId: number;
+  invoiceId: number | null;
+  customerId: number | null;
+  customerName: string;
+  amount: number;
+  paymentDate: string;
+  method: "bank_transfer" | "upi" | "cash" | "cheque" | "card" | "other";
+  bankAccountId: number | null;
+  reference: string;
+  notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type ExpenseDoc = {
+  id: number;
+  organizationId: number;
+  expenseDate: string;
+  vendorName: string;
+  category: string;
+  ledgerAccountId: number | null;
+  amount: number;
+  taxAmount: number;
+  currency: string;
+  paymentMethod: "bank_transfer" | "upi" | "cash" | "cheque" | "card" | "other";
+  bankAccountId: number | null;
+  status: "draft" | "recorded";
+  notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type ContractDoc = {
+  id: number;
+  organizationId: number;
+  customerId: number | null;
+  customerName: string;
+  title: string;
+  startDate: string;
+  endDate: string;
+  value: number;
+  currency: string;
+  billingTerms: string;
+  status: "draft" | "active" | "expired" | "cancelled";
+  notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type VendorBillDoc = {
+  id: number;
+  organizationId: number;
+  vendorName: string;
+  billNumber: string;
+  billDate: string;
+  dueDate: string;
+  amount: number;
+  currency: string;
+  category: string;
+  status: "open" | "paid" | "void";
+  paidAt: string | null;
+  notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type WorkSessionDoc = {
   id: number;
   userId: number;
@@ -588,4 +803,25 @@ export const DEFAULT_PERMISSIONS_BY_ROLE: Record<UserRole, string[]> = {
     "tasks.edit_all",
     "tasks.change_assignee",
   ],
+  finance: [
+    "dashboard.view",
+    "invoices.manage",
+    "customers.manage",
+  ],
+};
+
+/** Personal calendar notes / reminders on admin & project-manager dashboards. */
+export type DashboardReminderDoc = {
+  id: number;
+  organizationId: number;
+  userId: number;
+  title: string;
+  note: string | null;
+  /** YYYY-MM-DD in the work zone. */
+  dateKey: string;
+  /** Optional wall time HH:mm (24h). */
+  time: string | null;
+  color: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 };

@@ -15,6 +15,11 @@ const config: CapacitorConfig = {
     allowMixedContent: false,
     backgroundColor: "#0EA5E9",
   },
+  ios: {
+    // When the iOS project is generated (`npx cap add ios`), ensure Info.plist includes:
+    // NSLocationWhenInUseUsageDescription — shown when requesting location for clock-in.
+    scheme: "Aumento Tracker",
+  },
   plugins: {
     SplashScreen: {
       launchShowDuration: 1500,

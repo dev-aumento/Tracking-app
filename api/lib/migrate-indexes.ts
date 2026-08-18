@@ -161,6 +161,68 @@ export async function ensureIndexes() {
       ],
     },
     {
+      name: Collections.bankAccounts,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, name: 1 } },
+        { key: { organizationId: 1, createdAt: -1 } },
+      ],
+    },
+    {
+      name: Collections.ledgerAccounts,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, code: 1 }, unique: true },
+        { key: { organizationId: 1, type: 1 } },
+      ],
+    },
+    {
+      name: Collections.estimates,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, estimateNumber: 1 } },
+        { key: { organizationId: 1, createdAt: -1 } },
+      ],
+    },
+    {
+      name: Collections.payments,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, paymentDate: -1 } },
+        { key: { organizationId: 1, invoiceId: 1 } },
+      ],
+    },
+    {
+      name: Collections.expenses,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, expenseDate: -1 } },
+      ],
+    },
+    {
+      name: Collections.contracts,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, createdAt: -1 } },
+      ],
+    },
+    {
+      name: Collections.vendorBills,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, dueDate: 1 } },
+        { key: { organizationId: 1, status: 1 } },
+      ],
+    },
+    {
+      name: Collections.dashboardReminders,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, userId: 1, dateKey: 1 } },
+        { key: { userId: 1, dateKey: 1 } },
+      ],
+    },
+    {
       name: Collections.notifications,
       indexes: [{ key: { id: 1 }, unique: true }, { key: { userId: 1 } }],
     },
@@ -191,6 +253,21 @@ export async function ensureIndexes() {
         { key: { id: 1 }, unique: true },
         { key: { userId: 1, year: 1, month: 1 }, unique: true },
         { key: { year: 1 } },
+      ],
+    },
+    {
+      name: Collections.orgAttendanceQr,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1 }, unique: true },
+        { key: { token: 1 }, unique: true },
+      ],
+    },
+    {
+      name: Collections.orgAttendanceQrActivity,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, createdAt: -1 } },
       ],
     },
   ];

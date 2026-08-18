@@ -10,6 +10,7 @@ import { ensureSchema } from "./lib/migrate";
 import { notificationStreamHandler } from "./notification-stream";
 import { startAutoClockOutScheduler } from "./lib/auto-clock-out";
 import { startHolidayReminderScheduler } from "./lib/holiday-reminders";
+import { startDeadlineReminderScheduler } from "./lib/deadline-reminders";
 
 const app = new Hono<{ Bindings: HttpBindings }>();
 
@@ -39,6 +40,7 @@ const schemaReady = ensureSchema()
 void schemaReady.finally(() => {
   startAutoClockOutScheduler();
   startHolidayReminderScheduler();
+  startDeadlineReminderScheduler();
 });
 
 if (env.isProduction) {

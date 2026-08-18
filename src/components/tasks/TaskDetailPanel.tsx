@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { useSidebarWidth } from "@/hooks/useSidebarWidth";
-import { useTaskLiveTimer } from "@/hooks/useTaskLiveTimer";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import { isNativeApp } from "@/lib/platform";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import {
   PriorityMetaSelect,
   isTaskPriority,
 } from "@/components/tasks/task-form-ui";
 import { formatTimeAgo, formatElapsedHMS, cn, priorityConfig } from "@/lib/utils";
+import type { TaskTimerSource } from "@/components/tasks/TaskTrackedTimeDisplay";
 import { formatDueLabel, formatOverdueLabel, isTaskOverdue } from "@/lib/task-deadline";
 import {
   formatWorkZoneDate,
@@ -41,6 +42,7 @@ import {
   richCommentPlainText,
   type CommentMediaRef,
 } from "@/lib/rich-comment";
+import { filterMentionableUsers } from "@/lib/task-comment-mentions";
 import {
   RichTextCommentEditor,
   type RichTextCommentEditorHandle,
@@ -54,7 +56,11 @@ import { TaskTimeLoggedSection } from "@/components/tasks/TaskTimeLoggedSection"
 import { TaskTimeEstimatePopover } from "@/components/tasks/TaskTimeEstimatePopover";
 import { UserSearchSelect } from "@/components/tasks/UserSearchSelect";
 import { ProjectSearchSelect } from "@/components/tasks/ProjectSearchSelect";
-import { TaskTrackedTimeDisplay } from "@/components/tasks/TaskTrackedTimeDisplay";
+import {
+  LiveEstimateLabel,
+  LiveSessionElapsed,
+  TaskTrackedTimeDisplay,
+} from "@/components/tasks/TaskTrackedTimeDisplay";
 import {
   formatEstimatedDuration,
   isTrackedOverEstimate,
@@ -91,7 +97,7 @@ import {
   Trash2, Pencil,
   Flame, UserPlus, Search, PanelRightClose, PanelRightOpen, MoreHorizontal,
   VolumeX, Star, Calendar, Folder, User, Users, Copy, Flag, Hourglass,
-  ChevronDown, ChevronUp,
+  ChevronDown, ChevronUp, ChevronLeft,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -189,6 +195,9 @@ export function TaskDetailPanel({
   const [isPresent, setIsPresent] = useState(true);
   const requestClose = useCallback(() => setIsPresent(false), []);
   const sidebarWidth = useSidebarWidth();
+  const native = isNativeApp();
+  const panelLeft = native ? 0 : sidebarWidth;
+  const panelWidth = native ? "100vw" : `calc(100vw - ${sidebarWidth}px)`;
   const utils = trpc.useUtils();
   const { data: task, isLoading } = trpc.task.getById.useQuery(
     { id: taskId },
@@ -236,19 +245,20 @@ export function TaskDetailPanel({
           startedAt: new Date(Math.min(serverMs, localMs)),
           paused: false,
           accumulatedSeconds: 0,
-        };
+        } satisfies TaskTimerSource;
       }
-      return optimisticTimer;
+      return optimisticTimer satisfies TaskTimerSource;
     }
-    return activeTimer ?? null;
+    return (activeTimer ?? null) as TaskTimerSource | null;
   }, [optimisticTimer, activeTimer, taskId]);
 
-  const {
-    elapsedSeconds: timerElapsed,
-    isRunning: isTimerRunning,
-    isPaused: isTimerPaused,
-    hasActiveSession,
-  } = useTaskLiveTimer(timerSource);
+  // Derive session flags from the snapshot — do NOT tick elapsed here.
+  // Live seconds are owned by TaskTrackedTimeDisplay / LiveSessionElapsed so the
+  // panel (title, comments) does not re-render every second and wipe text selection.
+  const isTimerRunning = Boolean(timerSource?.startedAt && !timerSource.paused);
+  const isTimerPaused = Boolean(timerSource?.startedAt && timerSource.paused);
+  const hasActiveSession = timerSource?.startedAt != null;
+  const completedSeconds = timeData?.totalSeconds ?? 0;
 
   useEffect(() => {
     if (!isPresent) return;
@@ -267,18 +277,6 @@ export function TaskDetailPanel({
   useEffect(() => {
     setIsPresent(true);
   }, [taskId]);
-
-  const liveSessionSeconds = isTimerRunning
-    ? timerElapsed
-    : (activeTimer?.accumulatedSeconds ?? (hasActiveSession ? timerElapsed : 0));
-  const completedSeconds = timeData?.totalSeconds ?? 0;
-  /** Total time on the task: logged entries + current session while active. */
-  const trackedSeconds = completedSeconds + (hasActiveSession ? liveSessionSeconds : 0);
-  /**
-   * Meta "Time Tracking" clock continues from already-logged time while running
-   * (e.g. 01:12:35 → 01:12:36). Bottom bar still uses liveSessionSeconds from 00:00:00.
-   */
-  const displaySeconds = trackedSeconds;
 
   const panel = (
     <AnimatePresence onExitComplete={onClose}>
@@ -300,8 +298,13 @@ export function TaskDetailPanel({
             animate={{ x: 0 }}
             exit={{ x: "100%" }}
             transition={{ type: "spring", damping: 32, stiffness: 320 }}
-            style={{ left: sidebarWidth, width: `calc(100vw - ${sidebarWidth}px)` }}
-            className="fixed top-0 bottom-0 z-[130] bg-[#EEF0F3] flex min-h-0 h-[100dvh] overflow-visible border-l border-gray-200 shadow-[4px_0_24px_rgba(15,23,42,0.08)]"
+            style={{ left: panelLeft, width: panelWidth }}
+            className={cn(
+              "fixed top-0 bottom-0 z-[130] bg-[#EEF0F3] flex min-h-0 h-[100dvh] overflow-visible shadow-[4px_0_24px_rgba(15,23,42,0.08)]",
+              native
+                ? "border-l-0 pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]"
+                : "border-l border-gray-200",
+            )}
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -327,9 +330,8 @@ export function TaskDetailPanel({
                 usersData={usersData?.users ?? []}
                 projectsData={projectsData ?? []}
                 timeData={timeData}
-                trackedSeconds={trackedSeconds}
-                displaySeconds={displaySeconds}
-                liveSessionSeconds={liveSessionSeconds}
+                timerSource={timerSource}
+                completedSeconds={completedSeconds}
                 isTimerRunning={isTimerRunning}
                 isTimerPaused={isTimerPaused}
                 hasActiveSession={hasActiveSession}
@@ -364,9 +366,8 @@ function TaskPanelContent({
   usersData,
   projectsData,
   timeData,
-  trackedSeconds,
-  displaySeconds,
-  liveSessionSeconds,
+  timerSource,
+  completedSeconds,
   isTimerRunning,
   isTimerPaused,
   hasActiveSession,
@@ -380,12 +381,11 @@ function TaskPanelContent({
   onClose: () => void;
   onTaskOpen?: (taskId: number) => void;
   pipelineStagesProp?: PipelineStageDef[];
-  usersData: Array<{ id: number; name: string | null; avatar?: string | null }>;
+  usersData: Array<{ id: number; name: string | null; avatar?: string | null; role?: string | null }>;
   projectsData: Array<{ id: number; name: string; color?: string | null }>;
   timeData: ReturnType<typeof trpc.task.getTimeTracked.useQuery>["data"];
-  trackedSeconds: number;
-  displaySeconds: number;
-  liveSessionSeconds: number;
+  timerSource: TaskTimerSource | null;
+  completedSeconds: number;
   isTimerRunning: boolean;
   isTimerPaused: boolean;
   hasActiveSession: boolean;
@@ -455,7 +455,12 @@ function TaskPanelContent({
   const [observersExpanded, setObserversExpanded] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showSwitchTimerConfirm, setShowSwitchTimerConfirm] = useState(false);
-  const [showChatPanel, setShowChatPanel] = useState(false);
+  // Desktop/laptop (lg+): chat open by default. Mobile/tablet: closed until toggled.
+  // Desktop: open by default. Mobile: closed by default (task details only).
+  const [showChatPanel, setShowChatPanel] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(min-width: 1024px)").matches;
+  });
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [chatSearch, setChatSearch] = useState("");
   const [chatFeedMode, setChatFeedMode] = useState<"comments" | "all">("comments");
@@ -472,9 +477,6 @@ function TaskPanelContent({
 
   useEffect(() => {
     setIsDeferred(readTaskPref(taskId, "deferred", false));
-    setShowChatPanel(false);
-    setShowChatSearch(false);
-    setChatSearch("");
   }, [taskId]);
 
   useEffect(() => {
@@ -518,6 +520,7 @@ function TaskPanelContent({
   useEffect(() => {
     setIsMuted(readTaskPref(taskId, "muted", false));
     setIsFavorite(isTaskFavorite(taskId));
+    setShowChatPanel(window.matchMedia("(min-width: 1024px)").matches);
   }, [taskId]);
 
   useEffect(() => {
@@ -756,7 +759,7 @@ function TaskPanelContent({
 
   const isOwner = sameUserId(task.createdBy, user?.id);
   const isAssignee = sameUserId(task.assigneeId, user?.id);
-  const isParticipant = task.participants.some((p) => sameUserId(p.id, user?.id));
+  const isParticipant = (task.participants ?? []).some((p) => sameUserId(p.id, user?.id));
   /** Full task edits (deadline, priority, estimate, files, etc.). */
   const canManage =
     user?.role === "admin" ||
@@ -769,8 +772,16 @@ function TaskPanelContent({
    * Assignee changes are restricted separately (see canChangeAssignee).
    */
   const canEditTeamAndStatus = Boolean(user);
-  /** Assignee, participants, owner, and leads can run the task timer. */
-  const canTrackTime = canManage || isParticipant;
+  /**
+   * Assignee, participants, owner, and leads can run the task timer.
+   * Prefer the server flag from getById (checks task_participants directly).
+   */
+  const canTrackTime =
+    typeof task.canTrackTime === "boolean"
+      ? task.canTrackTime
+      : canManage ||
+        isParticipant ||
+        hasPermission(user, "time.edit_all");
   const canChangeOwner =
     user?.role === "admin" ||
     user?.role === "manager" ||
@@ -792,10 +803,21 @@ function TaskPanelContent({
     [task.observers],
   );
 
-  const participantSelectUsers = useMemo(
-    () => usersData.filter((u) => u.id !== task.assigneeId),
-    [usersData, task.assigneeId],
-  );
+  /** Assignees may also be participants (e.g. self-add); do not exclude assigneeId. */
+  const participantSelectUsers = useMemo(() => {
+    const map = new Map<number, { id: number; name: string | null; avatar?: string | null }>();
+    for (const u of usersData) map.set(u.id, u);
+    // Ensure the signed-in user can always find themselves in the picker.
+    if (user?.id != null && !map.has(user.id)) {
+      map.set(user.id, {
+        id: user.id,
+        name: user.name ?? null,
+        avatar: user.avatar,
+      });
+    }
+    for (const p of task.participants) map.set(p.id, p);
+    return [...map.values()];
+  }, [usersData, user?.id, user?.name, user?.avatar, task.participants]);
 
   const observerSelectUsers = useMemo(() => {
     const map = new Map<number, { id: number; name: string | null; avatar?: string | null }>();
@@ -957,6 +979,39 @@ function TaskPanelContent({
     setEditingTitle(true);
   };
 
+  const titlePointerRef = useRef<{ x: number; y: number; selecting: boolean } | null>(null);
+
+  const handleTitlePointerDown = (event: PointerEvent) => {
+    titlePointerRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      selecting: false,
+    };
+  };
+
+  const handleTitlePointerMove = (event: PointerEvent) => {
+    const start = titlePointerRef.current;
+    if (!start) return;
+    if (Math.abs(event.clientX - start.x) > 4 || Math.abs(event.clientY - start.y) > 4) {
+      start.selecting = true;
+    }
+  };
+
+  const handleTitleClick = (event: MouseEvent) => {
+    const start = titlePointerRef.current;
+    titlePointerRef.current = null;
+    // Allow selecting/copying title text without entering edit mode.
+    if (start?.selecting) {
+      event.preventDefault();
+      return;
+    }
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && selection.toString().trim()) {
+      return;
+    }
+    startEditingTitle();
+  };
+
   const cancelEditingTitle = () => {
     setTitleDraft(task.title);
     setEditingTitle(false);
@@ -1025,9 +1080,7 @@ function TaskPanelContent({
     if (next === "deferred") {
       const base = task.dueDate ? new Date(task.dueDate) : new Date();
       base.setDate(base.getDate() + 1);
-      if (isTimerRunning) {
-        pauseTimerMutation.mutate({ taskId });
-      }
+      // Defer only bumps the deadline — keep assignee and keep timers running.
       updateMutation.mutate({
         id: taskId,
         status,
@@ -1139,21 +1192,21 @@ function TaskPanelContent({
     }
   };
 
-  const handleSendComment = (text: string) => {
+  const handleSendComment = useCallback((text: string) => {
     const message = text.trim();
     if (!message) return;
     addCommentMutation.mutate({ taskId, message });
-  };
+  }, [addCommentMutation, taskId]);
 
-  const handleEditComment = (activityId: number, message: string) => {
+  const handleEditComment = useCallback((activityId: number, message: string) => {
     editCommentMutation.mutate({ taskId, activityId, message });
-  };
+  }, [editCommentMutation, taskId]);
 
-  const handleDeleteComment = (activityId: number) => {
+  const handleDeleteComment = useCallback((activityId: number) => {
     deleteCommentMutation.mutate({ taskId, activityId });
-  };
+  }, [deleteCommentMutation, taskId]);
 
-  const handleUploadCommentMedia = async (file: File) => {
+  const handleUploadCommentMedia = useCallback(async (file: File) => {
     assertAttachmentFileSize(file);
     const mimeType = resolveFileMimeType(file);
     const dataBase64 = await readFileAsBase64(file);
@@ -1170,7 +1223,7 @@ function TaskPanelContent({
       fileName: attachment.fileName,
       mimeType: attachment.mimeType || mimeType,
     };
-  };
+  }, [addAttachmentMutation, taskId]);
 
   const resolveMediaPreviewUrl = useCallback(
     createAttachmentPreviewResolver((id) => utils.task.getAttachment.fetch({ id })),
@@ -1190,7 +1243,10 @@ function TaskPanelContent({
     handleSendComment(`📅 Event or meeting: ${title}${whenPart}`);
   };
 
-  const mentionUsers = usersData;
+  const mentionUsers = useMemo(
+    () => filterMentionableUsers(usersData),
+    [usersData],
+  );
 
   const isManageableComment = (activity: (typeof task.activities)[number]) => {
     if (activity.action !== "commented") return false;
@@ -1450,9 +1506,13 @@ function TaskPanelContent({
   return (
     <>
       <div className="relative flex flex-1 min-h-0 min-w-0 h-full w-full">
-        {/* Edge actions sit outside the overflow clip so desktop tabs remain visible */}
-        <div className="absolute top-24 left-0 z-20 flex flex-col gap-1 pointer-events-auto max-lg:top-3 max-lg:right-3 max-lg:left-auto max-lg:flex-row max-lg:items-center">
-          <EdgeTabButton icon={X} label="Close" onClick={onClose} />
+        {/* Edge actions — hide on mobile while chat is open so they don't cover the hide/back control */}
+        <div
+          className={cn(
+            "absolute top-24 left-0 z-20 flex flex-col gap-1 pointer-events-auto max-lg:top-3 max-lg:right-3 max-lg:left-auto max-lg:flex-row max-lg:items-center",
+            showChatPanel && "max-lg:hidden",
+          )}
+        >
           <div className="relative max-lg:translate-x-0 -translate-x-full">
             <button
               ref={copyLinkBtnRef}
@@ -1468,12 +1528,7 @@ function TaskPanelContent({
             </button>
           </div>
           <EdgeTabButton icon={ExternalLink} label="Open in new tab" onClick={handlePopOut} />
-          <EdgeTabButton
-            icon={showChatPanel ? PanelRightClose : PanelRightOpen}
-            label={showChatPanel ? "Hide chat" : "Show chat"}
-            onClick={() => setShowChatPanel((open) => !open)}
-            active={showChatPanel}
-          />
+          <EdgeTabButton icon={X} label="Close" onClick={onClose} className="lg:order-first" />
         </div>
         {linkCopied && linkCopiedTipPos
           ? createPortal(
@@ -1489,7 +1544,7 @@ function TaskPanelContent({
           : null}
 
         <div className="flex flex-1 min-h-0 min-w-0 h-full overflow-hidden flex-col lg:flex-row">
-        {/* Task details — on mobile, hide while chat is open so Task Chat can be full height */}
+        {/* Task details — on mobile, hide while chat is open so Task Chat is full height */}
         <div
           className={cn(
             "relative w-full min-w-0 min-h-0 flex flex-1 flex-col bg-white border-r border-gray-200",
@@ -1528,19 +1583,20 @@ function TaskPanelContent({
                     className="flex-1 min-w-0 text-xl font-semibold text-[#1F2937] leading-tight border border-[#2563EB]/40 rounded-lg px-2 py-1 outline-none bg-white focus:ring-2 focus:ring-[#2563EB]/20"
                   />
                 ) : (
-                  <button
-                    type="button"
-                    onClick={startEditingTitle}
-                    disabled={!canManage}
-                    title={canManage ? "Edit title" : undefined}
+                  <h2
+                    onPointerDown={handleTitlePointerDown}
+                    onPointerMove={handleTitlePointerMove}
+                    onClick={canManage ? handleTitleClick : undefined}
+                    onDoubleClick={canManage ? startEditingTitle : undefined}
+                    title={canManage ? "Select to copy · double-click to edit" : undefined}
                     className={cn(
-                      "flex-1 min-w-0 text-left text-xl font-semibold text-[#1F2937] leading-tight border-0 outline-none bg-transparent rounded-lg px-0 py-0.5",
+                      "flex-1 min-w-0 text-left text-xl font-semibold text-[#1F2937] leading-tight border-0 outline-none bg-transparent rounded-lg px-0 py-0.5 select-text",
                       canManage && "hover:bg-gray-50 cursor-text",
                       !canManage && "cursor-default",
                     )}
                   >
                     {task.title}
-                  </button>
+                  </h2>
                 )}
                 <div className="flex items-center gap-0.5 shrink-0">
                   {canManage && !editingTitle ? (
@@ -1656,18 +1712,18 @@ function TaskPanelContent({
                           : undefined
                       }
                     >
-                      <div ref={descriptionContentRef}>
+                      <div ref={descriptionContentRef} className="min-w-0 max-w-full">
                         {hasRichDescription ? (
                           <CommentRichContent
                             message={task.description || ""}
                             mentionUsers={[]}
-                            className="text-gray-600"
+                            className="text-gray-600 min-w-0"
                             inlineMedia
                           />
                         ) : (
                           <p
                             className={cn(
-                              "text-sm text-gray-600 leading-relaxed whitespace-pre-wrap",
+                              "text-sm text-gray-600 leading-relaxed whitespace-pre-wrap select-text",
                               !descriptionText && "text-gray-400 italic",
                             )}
                           >
@@ -1779,49 +1835,45 @@ function TaskPanelContent({
               </MetaRow>
 
               <MetaRow label="Deadline" icon={Clock}>
-                {canManage ? (
-                  <input
-                    type="datetime-local"
-                    value={toDateTimeLocalValue(task.dueDate)}
-                    onChange={(e) =>
-                      updateMutation.mutate({
-                        id: taskId,
-                        dueDate: e.target.value ? new Date(e.target.value).toISOString() : null,
-                      })
-                    }
-                    className={cn(
-                      META_DATETIME_CLASS,
-                      taskOverdue && "border-red-200 text-red-600",
-                    )}
-                  />
-                ) : (
-                  <span
-                    className={cn(
-                      "inline-flex h-9 items-center text-sm",
-                      taskOverdue ? "text-red-600 font-medium" : "text-gray-800",
-                    )}
-                  >
-                    {task.dueDate ? formatDueLabel(task.dueDate) : "No deadline"}
-                  </span>
-                )}
-              </MetaRow>
-              {taskOverdue && task.dueDate && (
-                <div className="grid grid-cols-[16px_6.75rem_minmax(0,1fr)] gap-x-3 -mt-1 pb-2 border-b border-gray-100">
-                  <span />
-                  <span />
-                  <span className="inline-flex w-fit items-center rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600">
-                    {formatOverdueLabel(task.dueDate)}
-                  </span>
+                <div className="inline-flex items-center gap-2 min-w-0 flex-nowrap">
+                  {canManage ? (
+                    <input
+                      type="datetime-local"
+                      value={toDateTimeLocalValue(task.dueDate)}
+                      onChange={(e) =>
+                        updateMutation.mutate({
+                          id: taskId,
+                          dueDate: e.target.value ? new Date(e.target.value).toISOString() : null,
+                        })
+                      }
+                      className={cn(
+                        META_DATETIME_CLASS,
+                        taskOverdue && "border-red-200 text-red-600",
+                      )}
+                    />
+                  ) : (
+                    <span
+                      className={cn(
+                        "inline-flex h-9 items-center text-sm shrink-0",
+                        taskOverdue ? "text-red-600 font-medium" : "text-gray-800",
+                      )}
+                    >
+                      {task.dueDate ? formatDueLabel(task.dueDate) : "No deadline"}
+                    </span>
+                  )}
+                  {taskOverdue && task.dueDate && (
+                    <span className="inline-flex w-fit shrink-0 items-center rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600">
+                      {formatOverdueLabel(task.dueDate)}
+                    </span>
+                  )}
                 </div>
-              )}
+              </MetaRow>
 
               <MetaRow label="Time Tracking" icon={Clock}>
-                <div className="inline-flex items-center gap-2">
+                <div className="inline-flex items-center gap-2 flex-wrap">
                   <TaskTrackedTimeDisplay
-                    trackedSeconds={displaySeconds}
-                    isTimerRunning={isTimerRunning}
-                    isTimerPaused={isTimerPaused}
-                    hasActiveSession={hasActiveSession}
+                    completedSeconds={completedSeconds}
+                    timerSource={timerSource}
                   />
                   <button
                     type="button"
@@ -1849,9 +1901,7 @@ function TaskPanelContent({
                   {hasActiveSession && (
                     <div className="flex items-center justify-between text-sm bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
                       <span className="text-gray-600">Current session</span>
-                      <span className={`font-mono font-semibold tabular-nums ${isTimerRunning ? "text-[#2563EB]" : "text-gray-700"}`}>
-                        {formatElapsedHMS(liveSessionSeconds)}
-                      </span>
+                      <LiveSessionElapsed timerSource={timerSource} />
                     </div>
                   )}
                   <div className="flex items-center justify-between text-sm bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
@@ -1874,25 +1924,13 @@ function TaskPanelContent({
 
               <MetaRow label="Estimate" icon={Hourglass}>
                 <div className="inline-flex items-center gap-2">
-                  {(() => {
-                    const estimateLabel = formatEstimatedDuration(task.estimatedHours);
-                    const overEstimate = isTrackedOverEstimate(
-                      trackedSeconds,
-                      task.estimatedHours,
-                    );
-                    return estimateLabel ? (
-                      <span
-                        className={cn(
-                          "inline-flex items-center font-mono font-semibold tabular-nums text-sm",
-                          overEstimate ? "text-red-600" : "text-[#1F2937]",
-                        )}
-                      >
-                        {estimateLabel}
-                      </span>
-                    ) : (
-                      <span className="text-sm text-gray-400 italic">Not set</span>
-                    );
-                  })()}
+                  <LiveEstimateLabel
+                    estimatedHours={task.estimatedHours}
+                    completedSeconds={completedSeconds}
+                    timerSource={timerSource}
+                    formatLabel={formatEstimatedDuration}
+                    isOver={isTrackedOverEstimate}
+                  />
                   <TaskTimeEstimatePopover
                     taskId={taskId}
                     estimatedHours={task.estimatedHours}
@@ -2073,13 +2111,11 @@ function TaskPanelContent({
           {/* Bottom Start / Complete — always visible */}
           {canTrackTime && workflowState !== "complete" && (
             <div className="shrink-0 border-t border-gray-200 px-4 py-3 bg-white">
-              {hasActiveSession && workflowState !== "deferred" && (
+              {hasActiveSession && (
                 <div className="flex items-center justify-center gap-2 mb-2">
                   <TaskTrackedTimeDisplay
-                    trackedSeconds={liveSessionSeconds}
-                    isTimerRunning={isTimerRunning}
-                    isTimerPaused={isTimerPaused}
-                    hasActiveSession={hasActiveSession}
+                    timerSource={timerSource}
+                    sessionOnly
                     className="text-base"
                   />
                   <span className="text-[11px] font-medium text-gray-500 font-sans">
@@ -2088,7 +2124,7 @@ function TaskPanelContent({
                 </div>
               )}
               <div className="flex items-center gap-2">
-                {workflowState === "deferred" ? (
+                {workflowState === "deferred" && !hasActiveSession ? (
                   <button
                     type="button"
                     onClick={handleResumeTask}
@@ -2127,16 +2163,14 @@ function TaskPanelContent({
                     {isTimerPaused ? "Resume" : "Start"}
                   </button>
                 )}
-                {workflowState !== "deferred" && (
-                  <button
-                    type="button"
-                    onClick={handleComplete}
-                    disabled={updateMutation.isPending || stopTimerMutation.isPending}
-                    className="h-9 px-4 inline-flex items-center justify-center border border-gray-300 bg-white text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
-                  >
-                    Complete
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={handleComplete}
+                  disabled={updateMutation.isPending || stopTimerMutation.isPending}
+                  className="h-9 px-4 inline-flex items-center justify-center border border-gray-300 bg-white text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Complete
+                </button>
                 {(canChangeAssignee || canDelete) && (
                 <Popover open={actionsMenuOpen} onOpenChange={setActionsMenuOpen} modal>
                   <PopoverTrigger asChild>
@@ -2181,17 +2215,28 @@ function TaskPanelContent({
           )}
         </div>
 
-        {/* Task chat — full height on mobile when enabled; hidden when toggle is off */}
-        {showChatPanel ? (
+        {/* Task chat — full height on mobile when open; side panel on desktop */}
+        {showChatPanel && (
         <div className="flex flex-1 flex-col min-w-0 min-h-0 h-full bg-[#E8F0FE]">
-          <div className="px-5 py-3 bg-white/80 border-b border-gray-200 shrink-0">
+          <div className="px-5 py-3 bg-white/80 border-b border-gray-200 shrink-0 max-lg:pt-3">
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <h3 className="font-semibold text-[#1F2937]">Task Chat</h3>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  {memberCount} member{memberCount === 1 ? "" : "s"}
-                  {isMuted && " · Muted"}
-                </p>
+              <div className="min-w-0 flex items-start gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowChatPanel(false)}
+                  className="lg:hidden shrink-0 mt-0.5 w-9 h-9 flex items-center justify-center rounded-lg text-[#2563EB] bg-blue-50 hover:bg-blue-100"
+                  aria-label="Hide chat panel"
+                  title="Hide chat"
+                >
+                  <ChevronLeft size={20} />
+                </button>
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-[#1F2937]">Task Chat</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {memberCount} member{memberCount === 1 ? "" : "s"}
+                    {isMuted && " · Muted"}
+                  </p>
+                </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <HeaderIconButton
@@ -2250,7 +2295,7 @@ function TaskPanelContent({
             )}
           </div>
 
-          <div ref={chatFeedRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 space-y-3">
+          <div ref={chatFeedRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y p-4 space-y-3">
             {hiddenEarlierComments > 0 ? (
               <div className="flex justify-center pb-1">
                 <button
@@ -2360,16 +2405,18 @@ function TaskPanelContent({
             onSelectEvent={handleSelectEvent}
           />
         </div>
-        ) : (
+        )}
+
+        {!showChatPanel && (
           <button
             type="button"
             onClick={() => setShowChatPanel(true)}
-            className="shrink-0 border-gray-200 bg-white hover:bg-gray-50 flex items-center justify-center gap-2 text-gray-500 hover:text-[#2563EB] transition-colors max-lg:hidden lg:w-12 lg:border-l lg:flex-col"
+            className="shrink-0 border-gray-200 bg-white hover:bg-gray-50 flex items-center justify-center gap-2 text-gray-500 hover:text-[#2563EB] transition-colors max-lg:h-12 max-lg:w-full max-lg:border-t lg:w-12 lg:border-l lg:flex-col"
             title="Show chat panel"
             aria-label="Show chat panel"
           >
             <PanelRightOpen size={18} />
-            <span className="text-[10px] font-medium lg:[writing-mode:vertical-rl] lg:rotate-180">
+            <span className="text-[10px] font-medium max-lg:text-xs lg:[writing-mode:vertical-rl] lg:rotate-180">
               Chat
             </span>
           </button>
@@ -2473,11 +2520,13 @@ function EdgeTabButton({
   label,
   onClick,
   active,
+  className,
 }: {
   icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
   label: string;
   onClick: () => void;
   active?: boolean;
+  className?: string;
 }) {
   return (
     <button
@@ -2485,9 +2534,11 @@ function EdgeTabButton({
       onClick={onClick}
       title={label}
       aria-label={label}
-      className={`h-10 w-11 flex items-center justify-center text-white shadow-[0_2px_8px_rgba(37,99,235,0.35)] transition-colors max-lg:translate-x-0 max-lg:rounded-2xl lg:-translate-x-full lg:rounded-l-2xl lg:rounded-r-none ${
-        active ? "bg-[#1D4ED8]" : "bg-[#2563EB] hover:bg-[#1D4ED8]"
-      }`}
+      className={cn(
+        "h-10 w-11 flex items-center justify-center text-white shadow-[0_2px_8px_rgba(37,99,235,0.35)] transition-colors max-lg:translate-x-0 max-lg:rounded-2xl lg:-translate-x-full lg:rounded-l-2xl lg:rounded-r-none",
+        active ? "bg-[#1D4ED8]" : "bg-[#2563EB] hover:bg-[#1D4ED8]",
+        className,
+      )}
     >
       <Icon size={17} strokeWidth={2.25} />
     </button>
