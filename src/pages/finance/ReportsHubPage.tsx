@@ -3,11 +3,9 @@ import { Link, useLocation, useNavigate } from "react-router";
 import {
   ArrowLeftRight,
   BarChart3,
-  Building2,
   Landmark,
   Receipt,
   TrendingUp,
-  Wallet,
 } from "lucide-react";
 import { trpc } from "@/providers/trpc";
 import {
@@ -31,11 +29,8 @@ const SECTION_PATHS: Record<ReportSection, string> = {
 };
 
 const QUICK_LINKS = [
-  { to: "/finance/receivable", label: "Accounts Receivable", icon: Wallet },
-  { to: "/finance/payable", label: "Accounts Payable", icon: Receipt },
   { to: "/finance/payments", label: "Payments", icon: ArrowLeftRight },
   { to: "/finance/expenses", label: "Expenses", icon: Receipt },
-  { to: "/finance/banks", label: "Bank Accounts", icon: Building2 },
   { to: "/finance/tax", label: "Tax & Compliance", icon: BarChart3 },
 ];
 
@@ -44,11 +39,13 @@ function SummaryCard({
   value,
   hint,
   tone = "default",
+  currency,
 }: {
   label: string;
   value: number;
   hint?: string;
   tone?: "default" | "positive" | "negative";
+  currency?: string;
 }) {
   const valueClass =
     tone === "positive"
@@ -60,7 +57,7 @@ function SummaryCard({
     <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
       <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
       <p className={`text-2xl font-bold mt-1 ${valueClass}`}>
-        <FinanceMoney value={value} />
+        <FinanceMoney value={value} currency={currency} />
       </p>
       {hint ? <p className="text-xs text-gray-400 mt-1">{hint}</p> : null}
     </div>
@@ -83,7 +80,7 @@ export default function ReportsHubPage() {
 
   const equity = useMemo(() => {
     if (!data) return 0;
-    return data.cashInBank + data.accountsReceivable - data.accountsPayable;
+    return data.accountsReceivable - data.accountsPayable;
   }, [data]);
 
   useEffect(() => {
@@ -110,7 +107,7 @@ export default function ReportsHubPage() {
         icon={BarChart3}
       />
 
-      <div className="flex flex-wrap gap-2 sticky top-0 z-10 bg-gray-50/95 backdrop-blur py-2 -mx-1 px-1">
+      <div className="flex flex-wrap gap-2 sticky top-0 z-10 bg-gray-50/95 dark:bg-[#1f2937]/95 backdrop-blur py-2 -mx-1 px-1 rounded-xl">
         {SECTIONS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -134,18 +131,20 @@ export default function ReportsHubPage() {
           Profit & Loss
         </h2>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <SummaryCard label="Income" value={data.income} hint="Sent & paid invoices" />
+          <SummaryCard label="Income" value={data.income} hint="Paid invoices" currency={data.currency} />
           <SummaryCard
             label="Expenses"
             value={data.expenses}
             hint="Recorded expenses"
             tone="negative"
+            currency={data.currency}
           />
           <SummaryCard
             label="Net profit"
             value={data.netProfit}
             hint="Received minus expenses"
             tone={data.netProfit >= 0 ? "positive" : "negative"}
+            currency={data.currency}
           />
         </div>
         {data.expenseBreakdown.length > 0 ? (
@@ -165,7 +164,7 @@ export default function ReportsHubPage() {
                   <tr key={row.name} className="border-t border-gray-50">
                     <td className="px-4 py-2.5 text-gray-700">{row.name}</td>
                     <td className="px-4 py-2.5 text-right font-semibold">
-                      <FinanceMoney value={row.amount} />
+                      <FinanceMoney value={row.amount} currency={data.currency} />
                     </td>
                   </tr>
                 ))}
@@ -182,44 +181,13 @@ export default function ReportsHubPage() {
         </h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <SummaryCard
-            label="Cash in bank"
-            value={data.cashInBank}
-            hint="Sum of bank account balances"
-          />
-          <SummaryCard
             label="Payments received"
             value={data.received}
             hint="Total recorded payments"
             tone="positive"
+            currency={data.currency}
           />
         </div>
-        {data.bankAccounts.length > 0 ? (
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-            <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100">
-              <h3 className="text-sm font-semibold text-gray-700">Bank accounts</h3>
-            </div>
-            <table className="w-full text-sm">
-              <thead className="text-xs text-gray-400">
-                <tr>
-                  <th className="text-left font-medium px-4 py-2">Account</th>
-                  <th className="text-left font-medium px-4 py-2">Bank</th>
-                  <th className="text-right font-medium px-4 py-2">Balance</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.bankAccounts.map((bank) => (
-                  <tr key={bank.id} className="border-t border-gray-50">
-                    <td className="px-4 py-2.5 font-medium text-gray-800">{bank.name}</td>
-                    <td className="px-4 py-2.5 text-gray-500">{bank.bankName}</td>
-                    <td className="px-4 py-2.5 text-right font-semibold">
-                      <FinanceMoney value={bank.balance} currency={bank.currency} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
       </section>
 
       <section id="balance-sheet" className="scroll-mt-24 space-y-4">
@@ -227,51 +195,47 @@ export default function ReportsHubPage() {
           <Landmark size={18} className="text-[#2563EB]" />
           Balance Sheet
         </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <SummaryCard
             label="Accounts receivable"
             value={data.accountsReceivable}
             hint="Sent invoices outstanding"
+            currency={data.currency}
           />
           <SummaryCard
             label="Accounts payable"
             value={data.accountsPayable}
             hint="Open vendor bills"
             tone="negative"
+            currency={data.currency}
           />
-          <SummaryCard label="Cash" value={data.cashInBank} hint="Bank balances" />
           <SummaryCard
             label="Equity (plug)"
             value={equity}
-            hint="Cash + AR − AP"
+            hint="AR − AP"
             tone={equity >= 0 ? "positive" : "negative"}
+            currency={data.currency}
           />
         </div>
         <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm text-sm">
           <h3 className="font-semibold text-gray-800 mb-3">Balance sheet equation</h3>
           <dl className="space-y-2">
             <div className="flex justify-between">
-              <dt className="text-gray-500">Cash in bank</dt>
+              <dt className="text-gray-500">Accounts receivable</dt>
               <dd className="font-medium">
-                <FinanceMoney value={data.cashInBank} />
-              </dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-gray-500">+ Accounts receivable</dt>
-              <dd className="font-medium">
-                <FinanceMoney value={data.accountsReceivable} />
+                <FinanceMoney value={data.accountsReceivable} currency={data.currency} />
               </dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-gray-500">− Accounts payable</dt>
               <dd className="font-medium text-red-600">
-                <FinanceMoney value={data.accountsPayable} />
+                <FinanceMoney value={data.accountsPayable} currency={data.currency} />
               </dd>
             </div>
             <div className="flex justify-between border-t border-gray-100 pt-2 font-semibold text-gray-800">
               <dt>= Equity (plug)</dt>
               <dd>
-                <FinanceMoney value={equity} />
+                <FinanceMoney value={equity} currency={data.currency} />
               </dd>
             </div>
           </dl>

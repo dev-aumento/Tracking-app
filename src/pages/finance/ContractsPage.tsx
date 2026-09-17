@@ -18,6 +18,7 @@ import {
   inputClass,
   selectClass,
 } from "@/components/finance/FinancePageKit";
+import { useFxConvert } from "@/hooks/useFxConvert";
 
 type ContractStatus = "draft" | "active" | "expired" | "cancelled";
 
@@ -77,11 +78,14 @@ export default function ContractsPage() {
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState<ContractForm>(emptyForm());
   const [error, setError] = useState<string | null>(null);
+  const { toBase } = useFxConvert();
 
   const activeValue = useMemo(
     () =>
-      data.filter((c) => c.status === "active").reduce((sum, c) => sum + (c.value || 0), 0),
-    [data],
+      data
+        .filter((c) => c.status === "active")
+        .reduce((sum, c) => sum + toBase(c.value || 0, c.currency), 0),
+    [data, toBase],
   );
 
   function openCreate() {

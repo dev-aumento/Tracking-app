@@ -23,6 +23,7 @@ import {
   loadLegacyCustomers,
   markLegacyCustomersMigrated,
 } from "@/lib/customer-store";
+import { refreshDashboardPage } from "@/lib/dashboard-refresh";
 
 function formatDate(value: string) {
   if (!value) return "—";
@@ -148,6 +149,11 @@ export default function AdminInvoices() {
           ? await updateMutation.mutateAsync({ id: invoiceId, ...payload })
           : await createMutation.mutateAsync(payload);
       await utils.invoice.list.invalidate();
+      await Promise.all([
+        utils.finance.payments.list.invalidate(),
+        utils.finance.reports.summary.invalidate(),
+        refreshDashboardPage(utils),
+      ]);
       navigate(`/admin/invoices/${saved.id}`, { replace: true });
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Failed to save invoice");
@@ -164,6 +170,11 @@ export default function AdminInvoices() {
     try {
       await deleteMutation.mutateAsync({ id: selectedInvoice.id });
       await utils.invoice.list.invalidate();
+      await Promise.all([
+        utils.finance.payments.list.invalidate(),
+        utils.finance.reports.summary.invalidate(),
+        refreshDashboardPage(utils),
+      ]);
       navigate("/admin/invoices", { replace: true });
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : "Failed to delete invoice");

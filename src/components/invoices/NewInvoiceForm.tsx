@@ -5,7 +5,12 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import type { CustomerRecord } from "@/components/customers/NewCustomerForm";
+import { trpc } from "@/providers/trpc";
+import {
+  type CustomerRecord,
+  quickCustomerCreateValues,
+} from "@/components/customers/NewCustomerForm";
+import { CustomerSearchSelect } from "@/components/customers/CustomerSearchSelect";
 import { InvoicePdfPreview } from "@/components/invoices/InvoicePdfPreview";
 import {
   formatMoney,
@@ -71,6 +76,9 @@ export function NewInvoiceForm({
   existingInvoices = [],
   saving = false,
 }: NewInvoiceFormProps) {
+  const utils = trpc.useUtils();
+  const createCustomerMutation = trpc.customer.create.useMutation();
+  const [createdCustomers, setCreatedCustomers] = useState<CustomerRecord[]>([]);
   const isEditing = Boolean(initialInvoice);
   const [customerId, setCustomerId] = useState<number | "">(
     initialInvoice?.customerId ?? "",
@@ -100,9 +108,17 @@ export function NewInvoiceForm({
   const [markAsPaid, setMarkAsPaid] = useState(initialInvoice?.status === "paid");
   const [error, setError] = useState<string | null>(null);
 
+  const allCustomers = useMemo(() => {
+    const byId = new Map<number, CustomerRecord>();
+    for (const customer of [...createdCustomers, ...customers]) {
+      byId.set(customer.id, customer);
+    }
+    return [...byId.values()];
+  }, [customers, createdCustomers]);
+
   const selectedCustomer = useMemo(
-    () => customers.find((c) => c.id === customerId),
-    [customers, customerId],
+    () => allCustomers.find((c) => c.id === customerId),
+    [allCustomers, customerId],
   );
   const subTotal = invoiceSubTotal(items);
   const total = invoiceTotal({
@@ -266,26 +282,27 @@ export function NewInvoiceForm({
                 <Label className="text-sm font-medium mb-1.5 block">
                   Customer Name *
                 </Label>
-                <select
-                  value={customerId === "" ? "" : String(customerId)}
-                  onChange={(e) => {
-                    const nextId = e.target.value ? Number(e.target.value) : "";
-                    setCustomerId(nextId);
-                    if (typeof nextId === "number") {
-                      const customer = customers.find((c) => c.id === nextId);
-                      if (customer?.currency) setCurrency(customer.currency);
-                    }
+                <CustomerSearchSelect
+                  customers={allCustomers}
+                  value={customerId}
+                  creating={createCustomerMutation.isPending}
+                  onChange={(customer) => {
+                    setCustomerId(customer?.id ?? "");
+                    if (customer?.currency) setCurrency(customer.currency);
                     setError(null);
                   }}
-                  className={cn(selectClass, "w-full")}
-                >
-                  <option value="">Select or add a customer</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.displayName}
-                    </option>
-                  ))}
-                </select>
+                  onCreate={async (name) => {
+                    const created = await createCustomerMutation.mutateAsync(
+                      quickCustomerCreateValues(name, currency),
+                    );
+                    const record = created as CustomerRecord;
+                    setCreatedCustomers((prev) =>
+                      prev.some((item) => item.id === record.id) ? prev : [record, ...prev],
+                    );
+                    await utils.customer.list.invalidate();
+                    return record;
+                  }}
+                />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>

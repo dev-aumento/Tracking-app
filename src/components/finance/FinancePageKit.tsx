@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { Loader2, Plus, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatMoney } from "@/lib/invoice-store";
+import { useOrganizationBillingProfile } from "@/hooks/useOrganizationBillingProfile";
 
 export function FinancePageHeader({
   title,
@@ -91,14 +92,16 @@ export function FinanceLoading() {
 
 export function FinanceMoney({
   value,
-  currency = "INR",
+  currency,
   className = "",
 }: {
   value: number;
   currency?: string;
   className?: string;
 }) {
-  return <span className={className}>{formatMoney(value, currency)}</span>;
+  const { profile } = useOrganizationBillingProfile();
+  const code = currency || profile?.baseCurrency || "INR";
+  return <span className={className}>{formatMoney(value, code)}</span>;
 }
 
 export function FinanceBackLink() {
@@ -138,14 +141,17 @@ export function Field({
   children: ReactNode;
 }) {
   return (
-    <label className="block space-y-1.5">
+    <div className="block space-y-1.5">
       <span className="text-xs font-medium text-gray-600">{label}</span>
       {children}
-    </label>
+    </div>
   );
 }
 
 export const inputClass =
   "w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]";
+
+export const disabledInputClass =
+  `${inputClass} bg-gray-50 text-gray-600 cursor-not-allowed`;
 
 export const selectClass = inputClass;

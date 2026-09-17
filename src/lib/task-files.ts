@@ -119,6 +119,36 @@ export function isVideoMimeType(mimeType: string, fileName?: string) {
   return fileName ? isVideoFileName(fileName) : false;
 }
 
+/**
+ * MIME type browsers are more likely to decode in <video>.
+ * Many .mov uploads are H.264 in a QuickTime container; Chrome will not play
+ * `video/quicktime` but will often play the same bytes as `video/mp4`.
+ */
+export function getBrowserPlayableMimeType(mimeType: string, fileName?: string) {
+  const ext = fileName ? getFileExtension(fileName) : "";
+  if (
+    ext === "mov"
+    || mimeType === "video/quicktime"
+    || mimeType === "video/x-quicktime"
+  ) {
+    return "video/mp4";
+  }
+  if (ext === "m4v" || mimeType === "video/x-m4v") {
+    return "video/mp4";
+  }
+  if (mimeType.startsWith("video/") && mimeType !== "application/octet-stream") {
+    return mimeType;
+  }
+  return EXT_MIME[ext] || mimeType || "application/octet-stream";
+}
+
+/** Object URL browsers can more reliably decode in <video>/<img>. */
+export function createMediaPreviewObjectUrl(file: Blob, fileName: string, mimeType?: string) {
+  const playable = getBrowserPlayableMimeType(mimeType || file.type, fileName);
+  const blob = playable !== file.type ? new Blob([file], { type: playable }) : file;
+  return URL.createObjectURL(blob);
+}
+
 export function getTaskFileBadge(fileName: string, mimeType?: string): TaskFileBadge {
   const ext = getFileExtension(fileName);
   let kind = EXT_MAP[ext] ?? "file";
@@ -198,13 +228,17 @@ export function downloadFileFromBase64(fileName: string, mimeType: string, dataB
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = fileName;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(anchor);
+  window.setTimeout(() => URL.revokeObjectURL(url), 2_000);
 }
 
 export function openFileFromBase64(fileName: string, mimeType: string, dataBase64: string) {
   const blob = base64ToBlob(dataBase64, mimeType);
-  const url = URL.createObjectURL(blob);
+  const file = new File([blob], fileName, { type: mimeType || "application/octet-stream" });
+  const url = URL.createObjectURL(file);
   window.open(url, "_blank", "noopener,noreferrer");
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

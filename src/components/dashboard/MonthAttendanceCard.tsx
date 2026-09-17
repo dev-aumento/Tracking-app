@@ -3,6 +3,7 @@ import { CalendarCheck2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 function daysLabel(count: number) {
+  if (count === 0.5) return "0.5 Day";
   return `${count} Day${count === 1 ? "" : "s"}`;
 }
 
@@ -33,7 +34,6 @@ export function MonthAttendanceCard({
     { label: "Attendance", value: daysLabel(data?.attendanceDays ?? 0) },
     { label: "Late", value: daysLabel(data?.lateDays ?? 0) },
     { label: "Absent", value: daysLabel(data?.absentDays ?? 0) },
-    { label: "Half Days", value: daysLabel(data?.halfDays ?? 0) },
     {
       label: "Worked hours",
       value: data?.workedHoursLabel ?? "0 hr 0 mins",
@@ -92,7 +92,7 @@ export function MonthAttendanceCard({
               compact ? "grid-cols-2 gap-2" : "grid-cols-2 sm:grid-cols-3 gap-3",
             )}
           >
-            {Array.from({ length: compact ? 6 : 5 }).map((_, i) => (
+            {Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="space-y-2">
                 <div className="h-3 w-16 bg-gray-100 rounded" />
                 <div className="h-4 w-20 bg-gray-100 rounded" />

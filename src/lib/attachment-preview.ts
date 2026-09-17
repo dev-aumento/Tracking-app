@@ -1,13 +1,23 @@
 import type { PendingTaskAttachment } from "@/components/tasks/TaskFilesSection";
 import type { CommentMediaRef } from "@/lib/rich-comment";
-import { isImageMimeType, isVideoMimeType } from "@/lib/task-files";
+import {
+  base64ToBlob,
+  getBrowserPlayableMimeType,
+  isImageMimeType,
+  isVideoMimeType,
+} from "@/lib/task-files";
 
 type AttachmentPayload = {
   mimeType: string;
   dataBase64: string;
+  fileName?: string;
 };
 
 export function attachmentToPreviewUrl(attachment: AttachmentPayload) {
+  if (isVideoMimeType(attachment.mimeType, attachment.fileName)) {
+    const playable = getBrowserPlayableMimeType(attachment.mimeType, attachment.fileName);
+    return URL.createObjectURL(base64ToBlob(attachment.dataBase64, playable));
+  }
   return `data:${attachment.mimeType};base64,${attachment.dataBase64}`;
 }
 
@@ -25,7 +35,10 @@ export function createAttachmentPreviewResolver(
     try {
       const attachment = await fetchAttachment(media.id);
       if (!attachment?.dataBase64) return undefined;
-      return attachmentToPreviewUrl(attachment);
+      return attachmentToPreviewUrl({
+        ...attachment,
+        fileName: media.fileName,
+      });
     } catch {
       return undefined;
     }
@@ -49,6 +62,7 @@ export function createStagedAttachmentPreviewResolver(
       return attachmentToPreviewUrl({
         mimeType: pending.mimeType,
         dataBase64: pending.dataBase64,
+        fileName: pending.fileName ?? media.fileName,
       });
     }
 

@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import {
   Bold,
   List,
@@ -16,6 +16,7 @@ import {
   htmlContainsTable,
   hydrateRichEditorDom,
   insertMediaEmbedAtSelection,
+  insertMediaEmbedAtEnd,
   isPreviewableMedia,
   isProbablyUrl,
   isRichEditorDomEmpty,
@@ -27,12 +28,13 @@ import {
   RICH_MEDIA_ID_ATTR,
   RICH_MEDIA_NAME_ATTR,
   RICH_MEDIA_MIME_ATTR,
+  RICH_MEDIA_ROW_CLASS,
   saveEditorSelection,
   sanitizeRichCommentHtml,
   serializeRichEditorDom,
   type CommentMediaRef,
 } from "@/lib/rich-comment";
-import { assertAttachmentFileSize, resolveFileMimeType } from "@/lib/task-files";
+import { assertAttachmentFileSize, createMediaPreviewObjectUrl, resolveFileMimeType } from "@/lib/task-files";
 import { cn } from "@/lib/utils";
 
 export type RichTextCommentEditorHandle = {
@@ -57,10 +59,92 @@ type RichTextCommentEditorProps = {
   editorClassName?: string;
   /** Fixed editor body height in px (enables external resize handle). */
   editorHeight?: number;
+  /** When the auto-grown height reaches this value, the editor scrolls instead. */
+  editorMaxHeight?: number;
+  /** Grow the editor with typed/attached content instead of scrolling inside a short box. */
+  autoGrow?: boolean;
+  editorMinHeight?: number;
 };
 
 function getPlainText(editor: HTMLElement) {
   return editor.innerText.replace(/\u00a0/g, " ");
+}
+
+function isCaretAtEditorEnd(editor: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return false;
+
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.endContainer)) return false;
+
+  const remainder = range.cloneRange();
+  remainder.selectNodeContents(editor);
+  remainder.setStart(range.endContainer, range.endOffset);
+  return remainder.toString().replace(/\u00a0/g, " ").replace(/\s+/g, "").length === 0;
+}
+
+/** Keep the typed caret visible once the composer is scrolling at its max height. */
+export function keepEditorCaretInView(editor: HTMLElement | null) {
+  if (!editor) return;
+  if (editor.scrollHeight <= editor.clientHeight + 1) return;
+
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) {
+    editor.scrollTop = editor.scrollHeight;
+    return;
+  }
+
+  if (isCaretAtEditorEnd(editor)) {
+    editor.scrollTop = editor.scrollHeight;
+    return;
+  }
+
+  const range = selection.getRangeAt(0);
+  const editorRect = editor.getBoundingClientRect();
+  const rects = range.getClientRects();
+  const caretRect =
+    rects.length > 0
+      ? rects[rects.length - 1]
+      : range.getBoundingClientRect();
+
+  let caretTop = caretRect.top;
+  let caretBottom = caretRect.bottom;
+  if (!caretRect.height && !caretRect.width) {
+    const node = range.startContainer;
+    const el = node instanceof Element ? node : node.parentElement;
+    if (!el) {
+      editor.scrollTop = editor.scrollHeight;
+      return;
+    }
+    const fallback = el.getBoundingClientRect();
+    caretTop = fallback.top;
+    caretBottom = fallback.bottom;
+  }
+
+  const pad = 6;
+  if (caretBottom > editorRect.bottom - pad) {
+    editor.scrollTop += caretBottom - editorRect.bottom + pad;
+  } else if (caretTop < editorRect.top + pad) {
+    editor.scrollTop -= editorRect.top + pad - caretTop;
+  }
+}
+
+function measureEditorContentHeight(editor: HTMLElement) {
+  const prevHeight = editor.style.height;
+  const prevMinHeight = editor.style.minHeight;
+  const prevOverflowY = editor.style.overflowY;
+  const prevScrollTop = editor.scrollTop;
+
+  editor.style.height = "auto";
+  editor.style.minHeight = "0";
+  editor.style.overflowY = "hidden";
+  const needed = Math.ceil(editor.scrollHeight);
+  editor.style.height = prevHeight;
+  editor.style.minHeight = prevMinHeight;
+  editor.style.overflowY = prevOverflowY;
+  editor.scrollTop = prevScrollTop;
+
+  return needed;
 }
 
 function getCaretOffset(editor: HTMLElement) {
@@ -155,8 +239,17 @@ export const RichTextCommentEditor = forwardRef<
   className,
   editorClassName,
   editorHeight,
+  editorMaxHeight,
+  autoGrow = false,
+  editorMinHeight = 72,
 }, ref) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const [grownHeight, setGrownHeight] = useState(editorMinHeight);
+  const autoGrowMax = editorMaxHeight ?? (autoGrow ? 500 : undefined);
+  const appliedHeight =
+    typeof editorHeight === "number" ? editorHeight : autoGrow ? grownHeight : undefined;
+  const appliedMaxHeight =
+    typeof editorHeight === "number" ? editorMaxHeight : autoGrowMax;
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -176,6 +269,18 @@ export const RichTextCommentEditor = forwardRef<
     return serializeRichEditorDom(editor);
   };
 
+  const fitAutoGrowHeight = () => {
+    if (!autoGrow || typeof editorHeight === "number") return;
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const needed = measureEditorContentHeight(editor);
+    const max = autoGrowMax ?? 500;
+    const next = Math.min(max, Math.max(editorMinHeight, needed));
+    setGrownHeight((current) => (current === next ? current : next));
+    keepEditorCaretInView(editor);
+  };
+
   const emitChange = () => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -183,7 +288,16 @@ export const RichTextCommentEditor = forwardRef<
     const empty = isRichEditorDomEmpty(editor);
     setIsEmpty(empty);
     onChange(html, media);
+    fitAutoGrowHeight();
+    requestAnimationFrame(() => {
+      fitAutoGrowHeight();
+      keepEditorCaretInView(editorRef.current);
+    });
   };
+
+  useLayoutEffect(() => {
+    keepEditorCaretInView(editorRef.current);
+  }, [appliedHeight]);
 
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -210,6 +324,7 @@ export const RichTextCommentEditor = forwardRef<
     // without waiting on attachment downloads.
     hydrateRichEditorDom(editor, body, previewUrlsRef.current);
     syncFromDom();
+    fitAutoGrowHeight();
 
     const previewable = mediaRefs.filter(isPreviewableMedia);
     const resolver = resolveMediaPreviewUrlRef.current;
@@ -284,7 +399,10 @@ export const RichTextCommentEditor = forwardRef<
     runCommand("createLink", normalized);
   };
 
-  const uploadAndAttach = async (file: File) => {
+  const uploadAndAttach = async (
+    file: File,
+    placement: "selection" | "end" = "selection",
+  ) => {
     assertAttachmentFileSize(file);
     const mimeType = resolveFileMimeType(file);
     const normalizedFile =
@@ -293,9 +411,12 @@ export const RichTextCommentEditor = forwardRef<
         : file;
 
     const editor = editorRef.current;
-    const savedRange = editor ? saveEditorSelection(editor) : null;
+    const savedRange =
+      placement === "selection" && editor ? saveEditorSelection(editor) : null;
     const isPreviewable = isPreviewableMedia({ mimeType, fileName: file.name });
-    const previewUrl = isPreviewable ? URL.createObjectURL(normalizedFile) : undefined;
+    const previewUrl = isPreviewable
+      ? createMediaPreviewObjectUrl(normalizedFile, file.name, mimeType)
+      : undefined;
     // Temporary id so a preview can appear before the server upload finishes.
     const tempId = -(Date.now() + Math.floor(Math.random() * 100_000));
 
@@ -307,14 +428,12 @@ export const RichTextCommentEditor = forwardRef<
     }
 
     if (editorRef.current) {
-      insertMediaEmbedAtSelection(
-        editorRef.current,
-        { id: tempId, fileName: file.name, mimeType },
-        previewUrl,
-        savedRange,
-      );
-      const embed = editorRef.current.querySelector(`[${RICH_MEDIA_ID_ATTR}="${tempId}"]`);
-      embed?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      const mediaRef = { id: tempId, fileName: file.name, mimeType };
+      if (placement === "end") {
+        insertMediaEmbedAtEnd(editorRef.current, mediaRef, previewUrl);
+      } else {
+        insertMediaEmbedAtSelection(editorRef.current, mediaRef, previewUrl, savedRange);
+      }
       setIsEmpty(false);
       emitChange();
     }
@@ -336,14 +455,22 @@ export const RichTextCommentEditor = forwardRef<
         embed.setAttribute(RICH_MEDIA_MIME_ATTR, uploaded.mimeType || mimeType);
         emitChange();
       } else if (editorRef.current) {
-        insertMediaEmbedAtSelection(editorRef.current, uploaded, previewUrl, null);
+        if (placement === "end") {
+          insertMediaEmbedAtEnd(editorRef.current, uploaded, previewUrl);
+        } else {
+          insertMediaEmbedAtSelection(editorRef.current, uploaded, previewUrl, null);
+        }
         setIsEmpty(false);
         emitChange();
       }
     } catch (error) {
       console.error("Failed to upload file:", error);
       const embed = editorRef.current?.querySelector(`[${RICH_MEDIA_ID_ATTR}="${tempId}"]`);
+      const row = embed?.closest(`.${RICH_MEDIA_ROW_CLASS}`);
       embed?.remove();
+      if (row && !row.querySelector(`[${RICH_MEDIA_ID_ATTR}]`)) {
+        row.remove();
+      }
       if (previewUrl) {
         URL.revokeObjectURL(previewUrl);
         delete previewUrlsRef.current[tempId];
@@ -364,7 +491,7 @@ export const RichTextCommentEditor = forwardRef<
     attachFiles: async (files) => {
       for (const file of Array.from(files)) {
         try {
-          await uploadAndAttach(file);
+          await uploadAndAttach(file, "end");
         } catch {
           // uploadAndAttach already surfaces errors; keep uploading remaining files.
         }
@@ -481,7 +608,7 @@ export const RichTextCommentEditor = forwardRef<
     const files = event.target.files;
     if (!files?.length) return;
     for (const file of Array.from(files)) {
-      await uploadAndAttach(file);
+      await uploadAndAttach(file, "end");
     }
     event.target.value = "";
   };
@@ -491,7 +618,11 @@ export const RichTextCommentEditor = forwardRef<
     if (!editor) return;
 
     const embed = editor.querySelector(`[${RICH_MEDIA_ID_ATTR}="${id}"]`);
+    const row = embed?.closest(`.${RICH_MEDIA_ROW_CLASS}`);
     embed?.remove();
+    if (row && !row.querySelector(`[${RICH_MEDIA_ID_ATTR}]`)) {
+      row.remove();
+    }
 
     const previewUrl = previewUrlsRef.current[id];
     if (previewUrl) {
@@ -718,7 +849,7 @@ export const RichTextCommentEditor = forwardRef<
 
     focusEditor();
     for (const file of files) {
-      await uploadAndAttach(file);
+      await uploadAndAttach(file, "end");
     }
   };
 
@@ -792,16 +923,24 @@ export const RichTextCommentEditor = forwardRef<
           onBlur={emitChange}
           onClick={handleEditorClick}
           style={
-            typeof editorHeight === "number"
-              ? { height: editorHeight, minHeight: editorHeight }
+            typeof appliedHeight === "number"
+              ? {
+                  height: appliedHeight,
+                  minHeight: appliedHeight,
+                  overflowAnchor: "none",
+                  overflowY:
+                    typeof appliedMaxHeight === "number" && appliedHeight >= appliedMaxHeight
+                      ? "auto"
+                      : "hidden",
+                }
               : undefined
           }
           className={cn(
-            "rich-comment-editor min-w-0 max-w-full overflow-x-auto overflow-y-auto text-sm text-gray-800 focus:outline-none",
-            typeof editorHeight === "number"
+            "rich-comment-editor min-w-0 max-w-full overflow-x-auto text-sm text-gray-800 focus:outline-none",
+            typeof appliedHeight === "number"
               ? "max-h-none"
-              : "min-h-[72px] max-h-48",
-            "[&_a]:text-[#2563EB] [&_a]:underline [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-0.5",
+              : "min-h-[72px] max-h-48 overflow-y-auto",
+            "[&_a]:text-[#2563EB] [&_a]:underline [&_.rich-media-row]:flex [&_.rich-media-row]:w-full [&_.rich-media-row]:flex-wrap [&_.rich-media-row]:gap-2 [&_.rich-media-row_.rich-media-embed]:!m-0 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-0.5",
             "[&_.rich-media-embed]:!inline-block [&_.rich-media-embed]:!align-top [&_.rich-media-embed]:!w-[150px] [&_.rich-media-embed]:!h-[150px] [&_.rich-media-embed]:!min-w-[150px] [&_.rich-media-embed]:!min-h-[150px] [&_.rich-media-embed]:!max-w-[150px] [&_.rich-media-embed]:!max-h-[150px]",
             editorClassName,
           )}

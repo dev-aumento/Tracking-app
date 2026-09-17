@@ -12,11 +12,13 @@ function SummaryCard({
   value,
   hint,
   tone = "default",
+  currency,
 }: {
   label: string;
   value: number;
   hint?: string;
   tone?: "default" | "positive" | "negative";
+  currency?: string;
 }) {
   const valueClass =
     tone === "positive"
@@ -28,7 +30,7 @@ function SummaryCard({
     <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
       <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
       <p className={`text-2xl font-bold mt-1 ${valueClass}`}>
-        <FinanceMoney value={value} />
+        <FinanceMoney value={value} currency={currency} />
       </p>
       {hint ? <p className="text-xs text-gray-400 mt-1">{hint}</p> : null}
     </div>
@@ -63,9 +65,10 @@ export default function TaxCompliancePage() {
           label="Tax collected"
           value={data.taxCollected}
           hint="From invoice line taxes"
+          currency={data.currency}
         />
-        <SummaryCard label="Income" value={data.income} hint="Sent & paid invoices" />
-        <SummaryCard label="Expenses" value={data.expenses} hint="Recorded expenses" tone="negative" />
+        <SummaryCard label="Income" value={data.income} hint="Paid invoices" currency={data.currency} />
+        <SummaryCard label="Expenses" value={data.expenses} hint="Recorded expenses" tone="negative" currency={data.currency} />
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
@@ -74,25 +77,25 @@ export default function TaxCompliancePage() {
           <div className="flex justify-between border-b border-gray-50 pb-2">
             <dt className="text-gray-500">Taxable income (approx.)</dt>
             <dd className="font-medium text-gray-800">
-              <FinanceMoney value={data.income} />
+              <FinanceMoney value={data.income} currency={data.currency} />
             </dd>
           </div>
           <div className="flex justify-between border-b border-gray-50 pb-2">
             <dt className="text-gray-500">Tax collected on sales</dt>
             <dd className="font-medium text-gray-800">
-              <FinanceMoney value={data.taxCollected} />
+              <FinanceMoney value={data.taxCollected} currency={data.currency} />
             </dd>
           </div>
           <div className="flex justify-between border-b border-gray-50 pb-2">
             <dt className="text-gray-500">Total deductible expenses</dt>
             <dd className="font-medium text-gray-800">
-              <FinanceMoney value={data.expenses} />
+              <FinanceMoney value={data.expenses} currency={data.currency} />
             </dd>
           </div>
           <div className="flex justify-between border-b border-gray-50 pb-2">
             <dt className="text-gray-500">Net tax position (est.)</dt>
             <dd className={`font-medium ${netTaxPosition >= 0 ? "text-emerald-700" : "text-red-600"}`}>
-              <FinanceMoney value={netTaxPosition} />
+              <FinanceMoney value={netTaxPosition} currency={data.currency} />
             </dd>
           </div>
         </dl>
@@ -120,7 +123,7 @@ export default function TaxCompliancePage() {
                 <tr key={row.name} className="border-t border-gray-50">
                   <td className="px-4 py-2.5 text-gray-700">{row.name}</td>
                   <td className="px-4 py-2.5 text-right font-semibold text-gray-800">
-                    <FinanceMoney value={row.amount} />
+                    <FinanceMoney value={row.amount} currency={data.currency} />
                   </td>
                 </tr>
               ))}

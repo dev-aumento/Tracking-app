@@ -15,6 +15,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
+RUN apk add --no-cache ffmpeg
+
 COPY --from=build /app/dist ./dist
 
 EXPOSE 3000

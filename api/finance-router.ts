@@ -20,10 +20,23 @@ import type {
   LedgerAccountDoc,
   PaymentDoc,
   VendorBillDoc,
+  VendorDoc,
 } from "@db/mongo/types";
 import { orgFilter, requireOrganizationId } from "./lib/tenant";
 import { assertPermission } from "./lib/permissions";
 import { invoiceTotal } from "@/lib/invoice-store";
+import {
+  mockPayments,
+  nextMockPaymentId,
+} from "./lib/record-invoice-payment";
+import { convertEstimateToInvoice } from "./lib/convert-estimate";
+import { mockInvoices } from "./invoice-router";
+import {
+  createFxConverter,
+  getFxRateTable,
+  resolveOrgBaseCurrency,
+} from "./lib/currency-fx";
+import { normalizeCurrency, roundMoney } from "@/lib/currency-fx";
 
 function useMock() {
   return isAuthDisabled() || !hasMongoConfigured();
@@ -33,7 +46,7 @@ function assertFinanceAccess(user: { role?: string | null; permissions?: string[
   assertPermission(user as { role: string; permissions?: string[] }, "invoices.manage");
 }
 
-function toIso(doc: { createdAt: Date; updatedAt: Date } & Record<string, unknown>) {
+function toIso<T extends { createdAt: Date | string; updatedAt: Date | string }>(doc: T) {
   return {
     ...doc,
     createdAt:
@@ -94,10 +107,13 @@ const paymentInput = z.object({
   customerName: z.string().default(""),
   amount: z.number().positive(),
   paymentDate: z.string(),
-  method: z.enum(["bank_transfer", "upi", "cash", "cheque", "card", "other"]),
+  method: z.enum(["bank_transfer", "upi", "cash", "cheque", "card", "other", "bank_remittance"]),
   bankAccountId: z.number().nullable(),
   reference: z.string().default(""),
   notes: z.string().default(""),
+  remittanceType: z.enum(["forex", "domestic"]).nullable().optional().default(null),
+  taxAmount: z.number().default(0),
+  status: z.enum(["pending", "received"]).default("received"),
 });
 
 const expenseInput = z.object({
@@ -159,11 +175,24 @@ const DEFAULT_LEDGER: Array<Omit<LedgerAccountDoc, "id" | "organizationId" | "cr
 const mockBanks: BankAccountDoc[] = [];
 const mockLedgers: LedgerAccountDoc[] = [];
 const mockEstimates: EstimateDoc[] = [];
-const mockPayments: PaymentDoc[] = [];
 const mockExpenses: ExpenseDoc[] = [];
 const mockContracts: ContractDoc[] = [];
 const mockVendorBills: VendorBillDoc[] = [];
+const mockVendors: VendorDoc[] = [];
 let mockId = 1;
+
+function uniqueVendorNames(names: Array<string | null | undefined>) {
+  const seen = new Map<string, string>();
+  for (const raw of names) {
+    const name = String(raw ?? "").trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (!seen.has(key)) seen.set(key, name);
+  }
+  return [...seen.values()]
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+    .map((name) => ({ name }));
+}
 
 function estimateTotal(est: Pick<EstimateDoc, "items" | "taxPercent" | "adjustment">) {
   const sub = est.items.reduce((sum, item) => {
@@ -190,14 +219,68 @@ async function ensureDefaultLedgers(organizationId: number, userId: number) {
   }
 }
 
-function crudList<T extends { organizationId: number; createdAt: Date }>(
+function crudList<T extends { organizationId: number; createdAt: Date; updatedAt: Date }>(
   mock: T[],
   organizationId: number,
 ) {
   return mock
     .filter((d) => d.organizationId === organizationId)
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-    .map((d) => toIso(d as T & { createdAt: Date; updatedAt: Date }));
+    .map((d) => toIso(d));
+}
+
+function toPaymentClient(doc: PaymentDoc) {
+  return toIso({
+    ...doc,
+    status: doc.status === "pending" ? "pending" : "received",
+  });
+}
+
+async function applyEstimateConversion(estimate: EstimateDoc, userId: number, now: Date) {
+  const { invoice } = await convertEstimateToInvoice(estimate, userId, now);
+  if (!invoice) return estimate;
+  const convertedInvoiceId = invoice.id;
+  if (useMock()) {
+    const idx = mockEstimates.findIndex((row) => row.id === estimate.id);
+    if (idx >= 0) {
+      mockEstimates[idx] = { ...mockEstimates[idx], convertedInvoiceId, updatedAt: now };
+      return mockEstimates[idx];
+    }
+    return { ...estimate, convertedInvoiceId };
+  }
+  const updated = await updateById<EstimateDoc>(Collections.estimates, estimate.id, {
+    convertedInvoiceId,
+    updatedAt: now,
+  });
+  return updated ?? { ...estimate, convertedInvoiceId };
+}
+
+async function settleInvoiceFromPayment(
+  organizationId: number,
+  invoiceId: number | null,
+  amount: number,
+  status: "pending" | "received",
+  now: Date,
+) {
+  if (invoiceId == null || status === "pending") return;
+  if (useMock()) {
+    const inv = mockInvoices.find(
+      (invoice) => invoice.id === invoiceId && invoice.organizationId === organizationId,
+    );
+    if (inv && amount >= invoiceTotal(inv) * 0.99) {
+      inv.status = "paid";
+      inv.updatedAt = now;
+    }
+    return;
+  }
+  const inv = await findById<InvoiceDoc>(Collections.invoices, invoiceId);
+  if (!inv || inv.organizationId !== organizationId) return;
+  if (amount >= invoiceTotal(inv) * 0.99) {
+    await updateById<InvoiceDoc>(Collections.invoices, inv.id, {
+      status: "paid",
+      updatedAt: now,
+    });
+  }
 }
 
 export const financeRouter = createRouter({
@@ -406,7 +489,8 @@ export const financeRouter = createRouter({
           updatedAt: now,
         };
         mockEstimates.unshift(doc);
-        return { ...toIso(doc), total: estimateTotal(doc) };
+        const converted = await applyEstimateConversion(doc, ctx.user.id, now);
+        return { ...toIso(converted), total: estimateTotal(converted) };
       }
       await ensureSchema();
       const doc = await insertDoc<EstimateDoc>(Collections.estimates, {
@@ -416,7 +500,8 @@ export const financeRouter = createRouter({
         createdAt: now,
         updatedAt: now,
       });
-      return { ...toIso(doc), total: estimateTotal(doc) };
+      const converted = await applyEstimateConversion(doc, ctx.user.id, now);
+      return { ...toIso(converted), total: estimateTotal(converted) };
     }),
     update: authedQuery.input(estimateInput.extend({ id: z.number() })).mutation(async ({ ctx, input }) => {
       assertFinanceAccess(ctx.user);
@@ -426,7 +511,8 @@ export const financeRouter = createRouter({
         const idx = mockEstimates.findIndex((e) => e.id === id);
         if (idx < 0) throw new TRPCError({ code: "NOT_FOUND", message: "Estimate not found" });
         mockEstimates[idx] = { ...mockEstimates[idx], ...data, updatedAt: now };
-        return { ...toIso(mockEstimates[idx]), total: estimateTotal(mockEstimates[idx]) };
+        const converted = await applyEstimateConversion(mockEstimates[idx], ctx.user.id, now);
+        return { ...toIso(converted), total: estimateTotal(converted) };
       }
       await ensureSchema();
       const existing = await findById<EstimateDoc>(Collections.estimates, id);
@@ -437,7 +523,9 @@ export const financeRouter = createRouter({
         ...data,
         updatedAt: now,
       });
-      return updated ? { ...toIso(updated), total: estimateTotal(updated) } : null;
+      const merged = updated ?? { ...existing, ...data, updatedAt: now };
+      const converted = await applyEstimateConversion(merged, ctx.user.id, now);
+      return { ...toIso(converted), total: estimateTotal(converted) };
     }),
     delete: authedQuery.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
       assertFinanceAccess(ctx.user);
@@ -461,11 +549,16 @@ export const financeRouter = createRouter({
   payments: createRouter({
     list: authedQuery.query(async ({ ctx }) => {
       assertFinanceAccess(ctx.user);
-      if (useMock()) return crudList(mockPayments, ctx.user.organizationId ?? 1);
+      if (useMock()) {
+        return mockPayments
+          .filter((payment) => payment.organizationId === (ctx.user.organizationId ?? 1))
+          .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate))
+          .map(toPaymentClient);
+      }
       await ensureSchema();
       const col = await getCollection<PaymentDoc>(Collections.payments);
       const docs = await col.find(orgFilter(ctx.user)).sort({ paymentDate: -1 }).toArray();
-      return docs.map(toIso);
+      return docs.map(toPaymentClient);
     }),
     create: authedQuery.input(paymentInput).mutation(async ({ ctx, input }) => {
       assertFinanceAccess(ctx.user);
@@ -473,7 +566,7 @@ export const financeRouter = createRouter({
       const organizationId = requireOrganizationId(ctx.user);
       if (useMock()) {
         const doc: PaymentDoc = {
-          id: mockId++,
+          id: nextMockPaymentId(),
           organizationId,
           ...input,
           createdBy: ctx.user.id,
@@ -481,7 +574,14 @@ export const financeRouter = createRouter({
           updatedAt: now,
         };
         mockPayments.unshift(doc);
-        return toIso(doc);
+        await settleInvoiceFromPayment(
+          organizationId,
+          input.invoiceId,
+          input.amount,
+          input.status,
+          now,
+        );
+        return toPaymentClient(doc);
       }
       await ensureSchema();
       const doc = await insertDoc<PaymentDoc>(Collections.payments, {
@@ -491,19 +591,14 @@ export const financeRouter = createRouter({
         createdAt: now,
         updatedAt: now,
       });
-      if (input.invoiceId != null) {
-        const inv = await findById<InvoiceDoc>(Collections.invoices, input.invoiceId);
-        if (inv && inv.organizationId === organizationId) {
-          const total = invoiceTotal(inv);
-          if (input.amount >= total * 0.99) {
-            await updateById<InvoiceDoc>(Collections.invoices, inv.id, {
-              status: "paid",
-              updatedAt: now,
-            });
-          }
-        }
-      }
-      if (input.bankAccountId != null) {
+      await settleInvoiceFromPayment(
+        organizationId,
+        input.invoiceId,
+        input.amount,
+        input.status,
+        now,
+      );
+      if (input.status === "received" && input.bankAccountId != null) {
         const bank = await findById<BankAccountDoc>(Collections.bankAccounts, input.bankAccountId);
         if (bank && bank.organizationId === organizationId) {
           await updateById<BankAccountDoc>(Collections.bankAccounts, bank.id, {
@@ -512,7 +607,7 @@ export const financeRouter = createRouter({
           });
         }
       }
-      return toIso(doc);
+      return toPaymentClient(doc);
     }),
     update: authedQuery.input(paymentInput.extend({ id: z.number() })).mutation(async ({ ctx, input }) => {
       assertFinanceAccess(ctx.user);
@@ -522,7 +617,14 @@ export const financeRouter = createRouter({
         const idx = mockPayments.findIndex((p) => p.id === id);
         if (idx < 0) throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
         mockPayments[idx] = { ...mockPayments[idx], ...data, updatedAt: now };
-        return toIso(mockPayments[idx]);
+        await settleInvoiceFromPayment(
+          requireOrganizationId(ctx.user),
+          data.invoiceId,
+          data.amount,
+          data.status,
+          now,
+        );
+        return toPaymentClient(mockPayments[idx]);
       }
       await ensureSchema();
       const existing = await findById<PaymentDoc>(Collections.payments, id);
@@ -533,7 +635,14 @@ export const financeRouter = createRouter({
         ...data,
         updatedAt: now,
       });
-      return updated ? toIso(updated) : null;
+      await settleInvoiceFromPayment(
+        requireOrganizationId(ctx.user),
+        data.invoiceId,
+        data.amount,
+        data.status,
+        now,
+      );
+      return updated ? toPaymentClient(updated) : null;
     }),
     delete: authedQuery.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
       assertFinanceAccess(ctx.user);
@@ -712,6 +821,80 @@ export const financeRouter = createRouter({
     }),
   }),
 
+  // ——— Vendors ———
+  vendors: createRouter({
+    list: authedQuery.query(async ({ ctx }) => {
+      assertFinanceAccess(ctx.user);
+      const organizationId = ctx.user.organizationId ?? 1;
+      if (useMock()) {
+        return uniqueVendorNames([
+          ...mockVendors.filter((v) => v.organizationId === organizationId).map((v) => v.name),
+          ...mockExpenses.filter((e) => e.organizationId === organizationId).map((e) => e.vendorName),
+          ...mockVendorBills.filter((b) => b.organizationId === organizationId).map((b) => b.vendorName),
+        ]);
+      }
+
+      await ensureSchema();
+      const tenant = orgFilter(ctx.user);
+      const [vendors, expenses, bills] = await Promise.all([
+        (await getCollection<VendorDoc>(Collections.vendors)).find(tenant).toArray(),
+        (await getCollection<ExpenseDoc>(Collections.expenses)).find(tenant).project({ vendorName: 1 }).toArray(),
+        (await getCollection<VendorBillDoc>(Collections.vendorBills)).find(tenant).project({ vendorName: 1 }).toArray(),
+      ]);
+      return uniqueVendorNames([
+        ...vendors.map((v) => v.name),
+        ...expenses.map((e) => e.vendorName),
+        ...bills.map((b) => b.vendorName),
+      ]);
+    }),
+    create: authedQuery
+      .input(z.object({ name: z.string().min(1).max(200) }))
+      .mutation(async ({ ctx, input }) => {
+        assertFinanceAccess(ctx.user);
+        const name = input.name.trim();
+        if (!name) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Vendor name is required" });
+        }
+        const organizationId = requireOrganizationId(ctx.user);
+        const now = new Date();
+        const key = name.toLowerCase();
+
+        if (useMock()) {
+          const existing = mockVendors.find(
+            (v) => v.organizationId === organizationId && v.name.trim().toLowerCase() === key,
+          );
+          if (existing) return { id: existing.id, name: existing.name };
+          const doc: VendorDoc = {
+            id: mockId++,
+            organizationId,
+            name,
+            createdBy: ctx.user.id,
+            createdAt: now,
+            updatedAt: now,
+          };
+          mockVendors.unshift(doc);
+          return { id: doc.id, name: doc.name };
+        }
+
+        await ensureSchema();
+        const col = await getCollection<VendorDoc>(Collections.vendors);
+        const existing = await col.findOne({
+          organizationId,
+          name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+        });
+        if (existing) return { id: existing.id, name: existing.name };
+
+        const doc = await insertDoc<VendorDoc>(Collections.vendors, {
+          organizationId,
+          name,
+          createdBy: ctx.user.id,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return { id: doc.id, name: doc.name };
+      }),
+  }),
+
   // ——— Vendor bills (AP) ———
   vendorBills: createRouter({
     list: authedQuery.query(async ({ ctx }) => {
@@ -787,13 +970,27 @@ export const financeRouter = createRouter({
     }),
   }),
 
+  // ——— FX rates (live, cached) ———
+  fx: createRouter({
+    rates: authedQuery
+      .input(z.object({ baseCurrency: z.string().min(3).max(3).optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        assertFinanceAccess(ctx.user);
+        const organizationId = requireOrganizationId(ctx.user);
+        const baseCurrency = input?.baseCurrency
+          ? normalizeCurrency(input.baseCurrency)
+          : await resolveOrgBaseCurrency(organizationId);
+        return getFxRateTable(baseCurrency);
+      }),
+  }),
+
   // ——— Reports ———
   reports: createRouter({
     summary: authedQuery.query(async ({ ctx }) => {
       assertFinanceAccess(ctx.user);
       await ensureSchema();
       const tenant = orgFilter(ctx.user);
-      const [invoices, expenses, payments, banks, bills] = await Promise.all([
+      const [invoices, expenses, payments, bills] = await Promise.all([
         useMock()
           ? Promise.resolve([] as InvoiceDoc[])
           : (await getCollection<InvoiceDoc>(Collections.invoices)).find(tenant).toArray(),
@@ -804,60 +1001,67 @@ export const financeRouter = createRouter({
           ? Promise.resolve(mockPayments.filter((p) => p.organizationId === (ctx.user.organizationId ?? 1)))
           : (await getCollection<PaymentDoc>(Collections.payments)).find(tenant).toArray(),
         useMock()
-          ? Promise.resolve(mockBanks.filter((b) => b.organizationId === (ctx.user.organizationId ?? 1)))
-          : (await getCollection<BankAccountDoc>(Collections.bankAccounts)).find(tenant).toArray(),
-        useMock()
           ? Promise.resolve(mockVendorBills.filter((b) => b.organizationId === (ctx.user.organizationId ?? 1)))
           : (await getCollection<VendorBillDoc>(Collections.vendorBills)).find(tenant).toArray(),
       ]);
 
+      const fx = await createFxConverter(requireOrganizationId(ctx.user));
+      const invoiceById = new Map(invoices.map((invoice) => [invoice.id, invoice]));
+
       const income = invoices
-        .filter((i) => i.status === "paid" || i.status === "sent")
-        .reduce((s, i) => s + invoiceTotal(i), 0);
-      const received = payments.reduce((s, p) => s + p.amount, 0);
-      const expenseTotal = expenses
-        .filter((e) => e.status === "recorded")
-        .reduce((s, e) => s + e.amount + e.taxAmount, 0);
-      const ar = invoices
-        .filter((i) => i.status === "sent")
-        .reduce((s, i) => s + invoiceTotal(i), 0);
-      const ap = bills.filter((b) => b.status === "open").reduce((s, b) => s + b.amount, 0);
-      const cash = banks.reduce((s, b) => s + b.currentBalance, 0);
-      const taxCollected = invoices.reduce((s, i) => {
-        const sub = i.items.reduce(
-          (sum, item) => sum + item.quantity * item.rate * (1 - (item.discountPercent || 0) / 100),
+        .filter((i) => i.status === "paid")
+        .reduce((s, i) => s + fx.toBase(invoiceTotal(i), i.currency), 0);
+      const received = payments
+        .filter((p) => p.status !== "pending")
+        .reduce(
+          (s, p) =>
+            s +
+            fx.toBase(
+              p.amount,
+              p.invoiceId != null ? invoiceById.get(p.invoiceId)?.currency : fx.baseCurrency,
+            ),
           0,
         );
-        return s + (sub * (i.taxPercent || 0)) / 100;
-      }, 0);
+      const expenseTotal = expenses
+        .filter((e) => e.status === "recorded")
+        .reduce((s, e) => s + fx.toBase(e.amount + e.taxAmount, e.currency), 0);
+      const ar = invoices
+        .filter((i) => i.status === "sent")
+        .reduce((s, i) => s + fx.toBase(invoiceTotal(i), i.currency), 0);
+      const ap = bills
+        .filter((b) => b.status === "open")
+        .reduce((s, b) => s + fx.toBase(b.amount, b.currency), 0);
+      const taxCollected = invoices
+        .filter((i) => i.status === "paid")
+        .reduce((s, i) => {
+          const sub = i.items.reduce(
+            (sum, item) => sum + item.quantity * item.rate * (1 - (item.discountPercent || 0) / 100),
+            0,
+          );
+          return s + fx.toBase((sub * (i.taxPercent || 0)) / 100, i.currency);
+        }, 0);
 
       const expensesByCategory = new Map<string, number>();
       for (const e of expenses.filter((x) => x.status === "recorded")) {
         expensesByCategory.set(
           e.category || "General",
-          (expensesByCategory.get(e.category || "General") ?? 0) + e.amount + e.taxAmount,
+          (expensesByCategory.get(e.category || "General") ?? 0) +
+            fx.toBase(e.amount + e.taxAmount, e.currency),
         );
       }
 
       return {
-        income: Math.round(income),
-        received: Math.round(received),
-        expenses: Math.round(expenseTotal),
-        netProfit: Math.round(received - expenseTotal),
-        accountsReceivable: Math.round(ar),
-        accountsPayable: Math.round(ap),
-        cashInBank: Math.round(cash),
-        taxCollected: Math.round(taxCollected),
+        currency: fx.baseCurrency,
+        income: roundMoney(income),
+        received: roundMoney(received),
+        expenses: roundMoney(expenseTotal),
+        netProfit: roundMoney(received - expenseTotal),
+        accountsReceivable: roundMoney(ar),
+        accountsPayable: roundMoney(ap),
+        taxCollected: roundMoney(taxCollected),
         expenseBreakdown: [...expensesByCategory.entries()].map(([name, amount]) => ({
           name,
-          amount: Math.round(amount),
-        })),
-        bankAccounts: banks.map((b) => ({
-          id: b.id,
-          name: b.name,
-          bankName: b.bankName,
-          balance: b.currentBalance,
-          currency: b.currency,
+          amount: roundMoney(amount),
         })),
       };
     }),

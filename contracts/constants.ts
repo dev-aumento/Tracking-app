@@ -14,7 +14,7 @@ export const Paths = {
 } as const;
 
 export const Workspace = {
-  name: "FlowTicX",
+  name: "Aaso",
   tagline: "Your work. Your pace.",
 } as const;
 

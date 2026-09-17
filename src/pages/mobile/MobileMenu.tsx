@@ -168,7 +168,6 @@ export default function MobileMenu() {
       push("/finance/expenses", "Expenses", FileText, "Finance");
       push("/finance/receivable", "Receivable", Building2, "Finance");
       push("/finance/reports", "Reports", BarChart3, "Finance");
-      push("/finance/banks", "Bank Accounts", Building2, "Finance");
     } else {
       push("/admin/invoices", "Invoices", FileText, "Admin");
       push("/admin/customers", "Customers", Building2, "Admin");

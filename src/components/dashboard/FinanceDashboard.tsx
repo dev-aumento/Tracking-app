@@ -22,7 +22,6 @@ import {
   Wallet,
   TrendingUp,
   TrendingDown,
-  Landmark,
   Receipt,
   FileText,
   Banknote,
@@ -67,7 +66,6 @@ type DashboardSectionId =
   | "expenseBreakdown"
   | "aging"
   | "upcoming"
-  | "banks"
   | "quickActions";
 
 const DEFAULT_SECTIONS: Record<DashboardSectionId, boolean> = {
@@ -80,7 +78,6 @@ const DEFAULT_SECTIONS: Record<DashboardSectionId, boolean> = {
   expenseBreakdown: true,
   aging: true,
   upcoming: true,
-  banks: true,
   quickActions: true,
 };
 
@@ -94,7 +91,6 @@ const SECTION_LABELS: Array<{ id: DashboardSectionId; label: string }> = [
   { id: "expenseBreakdown", label: "Expense breakdown" },
   { id: "aging", label: "Receivable aging" },
   { id: "upcoming", label: "Upcoming invoices" },
-  { id: "banks", label: "Bank accounts" },
   { id: "quickActions", label: "Quick actions" },
 ];
 
@@ -341,6 +337,7 @@ export function FinanceDashboard() {
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             Here&apos;s your accounts overview for the selected period.
+            Totals are converted to {currency} with live exchange rates.
             {isFetching ? (
               <span className="ml-2 inline-flex items-center gap-1 text-gray-400">
                 <Loader2 size={12} className="animate-spin" />
@@ -485,7 +482,7 @@ export function FinanceDashboard() {
       </div>
 
       {show("kpis") ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
           <KpiCard
             title="Total Revenue"
             value={money(data.totalRevenueYtd)}
@@ -520,13 +517,6 @@ export function FinanceDashboard() {
             trend={<TrendChip value={data.netProfitYoYPct} suffix={periodSuffix} />}
             icon={TrendingUp}
             iconWrap="bg-violet-50 text-violet-600"
-          />
-          <KpiCard
-            title="Cash in Bank"
-            value={money(data.cashInBank)}
-            trend={<span className="text-[11px] font-medium text-gray-400">As on today</span>}
-            icon={Landmark}
-            iconWrap="bg-sky-50 text-sky-600"
           />
         </div>
       ) : null}
@@ -839,7 +829,7 @@ export function FinanceDashboard() {
         </div>
       ) : null}
 
-      {(show("aging") || show("upcoming") || show("banks") || show("quickActions")) ? (
+      {(show("aging") || show("upcoming") || show("quickActions")) ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           {show("aging") ? (
             <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
@@ -897,29 +887,6 @@ export function FinanceDashboard() {
             </div>
           ) : null}
 
-          {show("banks") ? (
-            <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-semibold text-[#1F2937]">Bank Accounts</h2>
-                <Link to="/finance/banks" className="text-xs text-[#2563EB] hover:underline">
-                  Manage
-                </Link>
-              </div>
-              <div className="space-y-3">
-                {data.bankAccounts.map((bank, index) => (
-                  <div
-                    key={`${bank.name}-${bank.mask}-${index}`}
-                    className="rounded-xl border border-gray-100 bg-gray-50/80 p-3"
-                  >
-                    <div className="text-sm font-medium text-gray-800">{bank.name}</div>
-                    <div className="text-[11px] text-gray-400 mt-0.5">{bank.mask}</div>
-                    <div className="text-base font-bold text-[#1F2937] mt-2">{money(bank.balance)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
           {show("quickActions") ? (
             <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
               <h2 className="font-semibold text-[#1F2937] mb-3">Quick Actions</h2>
@@ -930,7 +897,6 @@ export function FinanceDashboard() {
                   { label: "Add Expense", to: "/finance/expenses", icon: Receipt },
                   { label: "Create Estimate", to: "/finance/estimates", icon: ClipboardList },
                   { label: "New Contract", to: "/finance/contracts", icon: ScrollText },
-                  { label: "Bank Reconciliation", to: "/finance/banks", icon: Landmark },
                 ].map((action) => (
                   <Link
                     key={action.label}

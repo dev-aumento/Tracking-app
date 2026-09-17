@@ -21,7 +21,7 @@ import {
 type LedgerForm = {
   code: string;
   name: string;
-  type: "asset" | "liability" | "equity" | "income" | "expense";
+  type: "asset" | "income" | "expense";
   description: string;
   isActive: boolean;
 };
@@ -34,7 +34,10 @@ const emptyForm = (): LedgerForm => ({
   isActive: true,
 });
 
-const TYPE_ORDER = ["asset", "liability", "equity", "income", "expense"] as const;
+const TYPE_ORDER = ["asset", "income", "expense"] as const;
+
+const ACCOUNT_GRID =
+  "grid grid-cols-[7.5rem_minmax(10rem,1.2fr)_minmax(12rem,1.6fr)_7.5rem_6.5rem] items-center";
 
 export default function ChartOfAccountsPage() {
   const utils = trpc.useUtils();
@@ -110,7 +113,7 @@ export default function ChartOfAccountsPage() {
     <div className="space-y-4">
       <FinancePageHeader
         title="Chart of Accounts"
-        description="Organize income, expense, asset, and liability accounts for your books."
+        description="Organize income, expense, and asset accounts for your books."
         icon={BookOpen}
         onCreate={openCreate}
         createLabel="Add account"
@@ -135,41 +138,41 @@ export default function ChartOfAccountsPage() {
                 <h2 className="text-sm font-semibold text-gray-800 capitalize">{group.type}</h2>
                 <span className="text-xs text-gray-400">{group.rows.length} accounts</span>
               </div>
-              <table className="w-full text-sm">
-                <thead className="text-xs text-gray-400">
-                  <tr>
-                    <th className="text-left font-medium px-4 py-2">Code</th>
-                    <th className="text-left font-medium px-4 py-2">Name</th>
-                    <th className="text-left font-medium px-4 py-2">Description</th>
-                    <th className="text-left font-medium px-4 py-2">Status</th>
-                    <th className="text-right font-medium px-4 py-2">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {group.rows.map((row) => (
-                    <tr key={row.id} className="border-t border-gray-50">
-                      <td className="px-4 py-2.5 font-mono text-xs text-gray-600">{row.code}</td>
-                      <td className="px-4 py-2.5 font-medium text-gray-800">
-                        {row.name}
-                        {row.isSystem ? (
-                          <span className="ml-2 text-[10px] text-gray-400">System</span>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-500 truncate max-w-xs">
-                        {row.description || "—"}
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <StatusBadge
-                          label={row.isActive ? "Active" : "Inactive"}
-                          tone={row.isActive ? "success" : "neutral"}
-                        />
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <div className="flex justify-end gap-1">
+              <div className="overflow-x-auto">
+                <div className="min-w-[44rem]">
+                  <div className={`${ACCOUNT_GRID} px-4 py-2 text-xs font-medium text-gray-400 border-b border-gray-100`}>
+                    <span>Code</span>
+                    <span>Name</span>
+                    <span>Description</span>
+                    <span>Status</span>
+                    <span className="text-right">Actions</span>
+                  </div>
+                  <div>
+                    {group.rows.map((row) => (
+                      <div
+                        key={row.id}
+                        className={`${ACCOUNT_GRID} px-4 py-2.5 border-t border-gray-50 first:border-t-0 text-sm`}
+                      >
+                        <span className="font-mono text-xs text-gray-600">{row.code}</span>
+                        <span className="font-medium text-gray-800 truncate pr-3">
+                          {row.name}
+                          {row.isSystem ? (
+                            <span className="ml-2 text-[10px] font-normal text-gray-400">System</span>
+                          ) : null}
+                        </span>
+                        <span className="text-gray-500 truncate pr-3">{row.description || "—"}</span>
+                        <span>
+                          <StatusBadge
+                            label={row.isActive ? "Active" : "Inactive"}
+                            tone={row.isActive ? "success" : "neutral"}
+                          />
+                        </span>
+                        <span className="flex justify-end gap-1">
                           <button
                             type="button"
                             onClick={() => openEdit(row)}
                             className="p-2 rounded-lg hover:bg-gray-50 text-gray-500"
+                            aria-label="Edit"
                           >
                             <Pencil size={15} />
                           </button>
@@ -178,16 +181,17 @@ export default function ChartOfAccountsPage() {
                               type="button"
                               onClick={() => void handleDelete(row.id)}
                               className="p-2 rounded-lg hover:bg-red-50 text-red-500"
+                              aria-label="Delete"
                             >
                               <Trash2 size={15} />
                             </button>
                           ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           ))}
         </div>

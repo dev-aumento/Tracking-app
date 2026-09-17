@@ -752,6 +752,7 @@ export function DetailedCreateTaskView({
                   key={chatEditorKey}
                   initialHtml={chatEditorKey === 0 ? chatHtml : ""}
                   initialMedia={chatEditorKey === 0 ? chatMedia : []}
+                  autoGrow
                   onChange={(html, media) => {
                     setChatHtml(html);
                     setChatMedia(media);

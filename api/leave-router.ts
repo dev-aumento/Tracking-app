@@ -42,6 +42,7 @@ import {
   resolveEmploymentType,
   toJoiningDateKey,
   roundLeaveUnits,
+  wfhRequestBlockedMessage,
   type LeaveType,
 } from "@/lib/leave-policy";
 import { defaultHolidaysForYear } from "@/lib/public-holidays";
@@ -64,6 +65,34 @@ function assertValidLeaveDuration(leaveType: string, isHalfDay: boolean) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "Half day is not available for this leave type",
+    });
+  }
+}
+
+function assertWfhEligibleForUser(
+  user: {
+    onNoticePeriod?: boolean | null;
+    dateOfJoining?: Date | string | null;
+    employmentType?: string | null;
+    position?: string | null;
+  } | null | undefined,
+  leaveType: string,
+  options?: { forEmployee?: boolean },
+) {
+  if (!isWorkFromHomeLeave(leaveType)) return;
+  const message = wfhRequestBlockedMessage(
+    {
+      onNoticePeriod: Boolean(user?.onNoticePeriod),
+      dateOfJoining: user?.dateOfJoining ?? null,
+      employmentType: resolveEmploymentType(user),
+    },
+    new Date(),
+    options,
+  );
+  if (message) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message,
     });
   }
 }
@@ -395,6 +424,10 @@ export const leaveRouter = createRouter({
 
     const isHalfDay = Boolean(input.isHalfDay) && !isWorkFromHomeLeave(input.leaveType);
     assertValidLeaveDuration(input.leaveType, isHalfDay);
+    assertWfhEligibleForUser(
+      await findById<UserDoc>(Collections.users, ctx.user.id),
+      input.leaveType,
+    );
     // Force exact 0.5 for half-day so PL/SL balances always deduct correctly.
     const days = isHalfDay
       ? 0.5
@@ -511,6 +544,10 @@ export const leaveRouter = createRouter({
 
     const isHalfDay = Boolean(input.isHalfDay) && !isWorkFromHomeLeave(input.leaveType);
     assertValidLeaveDuration(input.leaveType, isHalfDay);
+    assertWfhEligibleForUser(
+      await findById<UserDoc>(Collections.users, ctx.user.id),
+      input.leaveType,
+    );
     const days = isHalfDay
       ? 0.5
       : leaveDayUnits(input.leaveType, input.startDate, input.endDate, false);
@@ -613,6 +650,7 @@ export const leaveRouter = createRouter({
 
     const isHalfDay = Boolean(input.isHalfDay) && !isWorkFromHomeLeave(input.leaveType);
     assertValidLeaveDuration(input.leaveType, isHalfDay);
+    assertWfhEligibleForUser(employee, input.leaveType, { forEmployee: true });
     const days = isHalfDay
       ? 0.5
       : leaveDayUnits(input.leaveType, input.startDate, input.endDate, false);

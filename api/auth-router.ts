@@ -48,7 +48,7 @@ export const authRouter = createRouter({
   me: publicQuery.query(({ ctx }) => ctx.user ?? null),
 
   organizationName: publicQuery.query(async ({ ctx }) => {
-    if (isAuthDisabled()) return { name: "FlowTicX" };
+    if (isAuthDisabled()) return { name: "Aaso" };
     try {
       await ensureSchema();
       if (ctx.user?.organizationId) {
@@ -56,7 +56,7 @@ export const authRouter = createRouter({
       }
       return { name: await getOrganizationName() };
     } catch {
-      return { name: "FlowTicX" };
+      return { name: "Aaso" };
     }
   }),
 

@@ -319,6 +319,11 @@ export type TaskAttachmentDoc = {
   dataBase64?: string;
   /** GridFS ObjectId hex string for binary payload. */
   gridFsId?: string;
+  /** H.264 MP4 preview generated for browser playback (.mov / HEVC / etc.). */
+  previewGridFsId?: string;
+  previewMimeType?: string;
+  /** JPEG poster for video tiles (small). */
+  posterBase64?: string;
   /**
    * When false, attachment is comment/chat/description media only
    * and must not appear in the task Files section.
@@ -660,10 +665,14 @@ export type PaymentDoc = {
   customerName: string;
   amount: number;
   paymentDate: string;
-  method: "bank_transfer" | "upi" | "cash" | "cheque" | "card" | "other";
+  method: "bank_transfer" | "upi" | "cash" | "cheque" | "card" | "other" | "bank_remittance";
   bankAccountId: number | null;
   reference: string;
   notes: string;
+  /** Only used when method is bank_remittance. */
+  remittanceType: "forex" | "domestic" | null;
+  taxAmount: number;
+  status: "pending" | "received";
   createdBy: number | null;
   createdAt: Date;
   updatedAt: Date;
@@ -683,6 +692,15 @@ export type ExpenseDoc = {
   bankAccountId: number | null;
   status: "draft" | "recorded";
   notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type VendorDoc = {
+  id: number;
+  organizationId: number;
+  name: string;
   createdBy: number | null;
   createdAt: Date;
   updatedAt: Date;

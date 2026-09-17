@@ -7,6 +7,8 @@ export const MEDIA_TOKEN_REGEX = /«media:(-?\d+)\|([^|»]+)\|([^»]+)»/g;
 export const RICH_MEDIA_ID_ATTR = "data-rich-media-id";
 export const RICH_MEDIA_NAME_ATTR = "data-rich-media-name";
 export const RICH_MEDIA_MIME_ATTR = "data-rich-media-mime";
+/** Wraps file-picked media so tiles sit on their own row after the text. */
+export const RICH_MEDIA_ROW_CLASS = "rich-media-row";
 
 const ALLOWED_TAGS = new Set([
   "P",
@@ -481,6 +483,9 @@ function serializeRichEditorNode(node: Node, media: CommentMediaRef[], seenIds: 
   const children = serializeRichEditorChildren(element, media, seenIds);
 
   if (tag === "BR") return "<br>";
+  if (element.classList.contains(RICH_MEDIA_ROW_CLASS)) {
+    return serializeRichEditorChildren(element, media, seenIds);
+  }
   if (tag === "STRONG" || tag === "B") return `<strong>${children}</strong>`;
   if (tag === "EM" || tag === "I") return `<em>${children}</em>`;
   if (tag === "U") return `<u>${children}</u>`;
@@ -570,14 +575,47 @@ function createMediaEmbedElement(media: CommentMediaRef, previewUrl?: string) {
     span.appendChild(img);
   } else if (previewUrl && isVideo) {
     const video = document.createElement("video");
-    video.src = previewUrl;
+    video.src = previewUrl.includes("#t=") ? previewUrl : `${previewUrl}#t=0.1`;
     video.muted = true;
-    video.preload = "metadata";
+    video.playsInline = true;
+    video.preload = "auto";
     video.style.display = "block";
     video.style.width = "100%";
     video.style.height = "100%";
     video.style.objectFit = "cover";
+    video.style.background = "#111827";
+    video.addEventListener("loadedmetadata", () => {
+      if (video.currentTime < 0.05) {
+        try {
+          video.currentTime = 0.1;
+        } catch {
+          // Ignore seek errors before enough data is buffered.
+        }
+      }
+    });
     span.appendChild(video);
+
+    const overlay = document.createElement("span");
+    overlay.style.position = "absolute";
+    overlay.style.inset = "0";
+    overlay.style.display = "flex";
+    overlay.style.alignItems = "center";
+    overlay.style.justifyContent = "center";
+    overlay.style.background = "rgba(0,0,0,0.35)";
+    overlay.style.pointerEvents = "none";
+    const playBadge = document.createElement("span");
+    playBadge.style.display = "inline-flex";
+    playBadge.style.width = "32px";
+    playBadge.style.height = "32px";
+    playBadge.style.alignItems = "center";
+    playBadge.style.justifyContent = "center";
+    playBadge.style.borderRadius = "9999px";
+    playBadge.style.background = "rgba(255,255,255,0.9)";
+    playBadge.style.color = "#1F2937";
+    playBadge.style.fontSize = "12px";
+    playBadge.textContent = "▶";
+    overlay.appendChild(playBadge);
+    span.appendChild(overlay);
   } else if (isImage || isVideo) {
     const label = document.createElement("span");
     label.style.display = "flex";
@@ -738,6 +776,65 @@ export function insertMediaEmbedAtSelection(
   editor.appendChild(document.createTextNode("\u00a0"));
 }
 
+function isMediaRowElement(node: Node | null): node is HTMLElement {
+  return node instanceof HTMLElement && node.classList.contains(RICH_MEDIA_ROW_CLASS);
+}
+
+function createMediaRowElement(hasPrecedingContent: boolean) {
+  const row = document.createElement("div");
+  row.className = RICH_MEDIA_ROW_CLASS;
+  row.style.display = "flex";
+  row.style.flexWrap = "wrap";
+  row.style.alignItems = "flex-start";
+  row.style.gap = "8px";
+  row.style.width = "100%";
+  row.style.marginTop = hasPrecedingContent ? "8px" : "0";
+  return row;
+}
+
+function getOrCreateTrailingMediaRow(editor: HTMLElement): HTMLElement {
+  let node: ChildNode | null = editor.lastChild;
+  while (node) {
+    if (isMediaRowElement(node)) return node;
+    if (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === "BR") {
+      node = node.previousSibling;
+      continue;
+    }
+    if (
+      node.nodeType === Node.TEXT_NODE
+      && !(node.textContent ?? "").replace(/\u00a0/g, " ").trim()
+    ) {
+      node = node.previousSibling;
+      continue;
+    }
+    break;
+  }
+
+  const row = createMediaRowElement(editor.childNodes.length > 0);
+  editor.appendChild(row);
+  return row;
+}
+
+/** Append a media tile after the comment text so it cannot sit on top of typed content. */
+export function insertMediaEmbedAtEnd(
+  editor: HTMLElement,
+  media: CommentMediaRef,
+  previewUrl?: string,
+) {
+  editor.focus();
+  const row = getOrCreateTrailingMediaRow(editor);
+  const span = createMediaEmbedElement(media, previewUrl);
+  row.appendChild(span);
+
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.setStartAfter(row);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 export function extractMediaFromBody(body: string, extra: CommentMediaRef[] = []) {
   const seen = new Set<number>();
   const media: CommentMediaRef[] = [];
@@ -773,8 +870,10 @@ export function hydrateRichEditorDom(
     return;
   }
 
+  let mediaRow: HTMLElement | null = null;
   for (const segment of segments) {
     if (segment.type === "html") {
+      mediaRow = null;
       const wrapper = document.createElement("div");
       wrapper.innerHTML = sanitizeRichCommentHtml(segment.value);
       while (wrapper.firstChild) {
@@ -783,7 +882,11 @@ export function hydrateRichEditorDom(
       continue;
     }
 
-    editor.appendChild(
+    if (!mediaRow) {
+      mediaRow = createMediaRowElement(editor.childNodes.length > 0);
+      editor.appendChild(mediaRow);
+    }
+    mediaRow.appendChild(
       createMediaEmbedElement(segment.media, previewUrls[segment.media.id]),
     );
   }

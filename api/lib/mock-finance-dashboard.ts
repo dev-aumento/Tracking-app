@@ -19,7 +19,6 @@ export function mockFinanceDashboard() {
     expensesYoYPct: 0,
     netProfitYtd: 214750,
     netProfitYoYPct: 16,
-    cashInBank: 0,
     revenueOverview: [
       { label: "Jan", thisYear: 14000, lastYear: 11000 },
       { label: "Feb", thisYear: 15500, lastYear: 12000 },
@@ -133,6 +132,5 @@ export function mockFinanceDashboard() {
         currency: "USD",
       },
     ],
-    bankAccounts: [],
   };
 }

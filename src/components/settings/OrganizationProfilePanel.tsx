@@ -16,11 +16,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
+import { INVOICE_CURRENCIES } from "@/lib/invoice-store";
 import { WORLD_COUNTRIES } from "@/lib/world-countries";
 import { getStatesForCountry } from "@/lib/country-states";
 import { WORK_TIMEZONE_LABEL } from "@/lib/timezone";
 import { useAuth } from "@/hooks/useAuth";
 import { trpc } from "@/providers/trpc";
+import { refreshPortalCurrencyViews } from "@/lib/dashboard-refresh";
 import {
   DEFAULT_ORGANIZATION_PROFILE,
   cacheOrganizationProfile,
@@ -57,14 +59,6 @@ const BUSINESS_TYPES = [
   "LLP",
   "NGO / Trust",
   "Other",
-];
-
-const CURRENCIES = [
-  { value: "INR", label: "INR - Indian Rupee" },
-  { value: "USD", label: "USD - US Dollar" },
-  { value: "EUR", label: "EUR - Euro" },
-  { value: "GBP", label: "GBP - British Pound" },
-  { value: "AED", label: "AED - UAE Dirham" },
 ];
 
 const FISCAL_YEARS = [
@@ -176,7 +170,7 @@ export function OrganizationProfilePanel({
       setError(null);
       setSaved(true);
       onSaved?.();
-      await utils.organization.getBillingProfile.invalidate();
+      await refreshPortalCurrencyViews(utils);
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
       savedTimerRef.current = setTimeout(() => setSaved(false), 2000);
     },
@@ -797,14 +791,14 @@ export function OrganizationProfilePanel({
           )}
         </div>
 
-        <FieldRow label="Base Currency" hint="Currency used across invoices and reports">
+        <FieldRow label="Base Currency" hint="Portal currency for revenue, received, and reports. Invoice amounts in other currencies are converted live into this one.">
           <select
             value={form.baseCurrency}
             onChange={(e) => update("baseCurrency", e.target.value)}
             className={cn(selectClass, "max-w-xl")}
           >
-            {CURRENCIES.map((item) => (
-              <option key={item.value} value={item.value}>
+            {INVOICE_CURRENCIES.map((item) => (
+              <option key={item.code} value={item.code}>
                 {item.label}
               </option>
             ))}

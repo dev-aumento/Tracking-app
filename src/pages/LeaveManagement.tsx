@@ -32,6 +32,7 @@ import {
   remainingMonthlyPaidLeave,
   resolveEmploymentType,
   toJoiningDateKey,
+  wfhRequestBlockedMessage,
   type LeaveDuration,
   type LeaveType,
 } from "@/lib/leave-policy";
@@ -110,6 +111,31 @@ type EmployeeColumn = {
   position?: string | null;
   onNoticePeriod?: boolean;
 };
+
+type ManualEntryEmployee = {
+  id: number;
+  name: string | null;
+  email?: string | null;
+  avatar: string | null;
+  department: string | null;
+  dateOfJoining?: Date | string | null;
+  employmentType?: string | null;
+  position?: string | null;
+  onNoticePeriod?: boolean;
+};
+
+function employeeWfhBlockedReason(emp: ManualEntryEmployee | null | undefined) {
+  if (!emp) return null;
+  return wfhRequestBlockedMessage(
+    {
+      onNoticePeriod: Boolean(emp.onNoticePeriod),
+      dateOfJoining: emp.dateOfJoining ?? null,
+      employmentType: resolveEmploymentType(emp),
+    },
+    new Date(),
+    { forEmployee: true },
+  );
+}
 
 const MONTH_LABELS = [
   "Jan",
@@ -1934,6 +1960,10 @@ export default function LeaveManagement() {
           email: u.email,
           avatar: u.avatar ?? null,
           department: u.department ?? null,
+          dateOfJoining: toJoiningDateKey(u.dateOfJoining ?? null),
+          employmentType: u.employmentType ?? null,
+          position: u.position ?? null,
+          onNoticePeriod: Boolean(u.onNoticePeriod),
         }))}
         existingLeaves={allRequests}
         submitting={createManualMutation.isPending && !manualWfhOpen}
@@ -1949,6 +1979,10 @@ export default function LeaveManagement() {
           email: u.email,
           avatar: u.avatar ?? null,
           department: u.department ?? null,
+          dateOfJoining: toJoiningDateKey(u.dateOfJoining ?? null),
+          employmentType: u.employmentType ?? null,
+          position: u.position ?? null,
+          onNoticePeriod: Boolean(u.onNoticePeriod),
         }))}
         existingLeaves={allRequests}
         submitting={createManualMutation.isPending && manualWfhOpen}
@@ -2065,13 +2099,7 @@ function ManualLeaveEntryDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  employees: Array<{
-    id: number;
-    name: string | null;
-    email?: string | null;
-    avatar: string | null;
-    department: string | null;
-  }>;
+  employees: ManualEntryEmployee[];
   existingLeaves: Array<{
     userId: number;
     status: string;
@@ -2109,6 +2137,7 @@ function ManualLeaveEntryDialog({
 
   const selectedEmployee =
     userId === "" ? null : employees.find((e) => e.id === userId) ?? null;
+  const wfhBlockedReason = employeeWfhBlockedReason(selectedEmployee);
 
   const blockedDates = useMemo(
     () => approvedLeaveDateKeysForUser(existingLeaves, userId),
@@ -2168,6 +2197,12 @@ function ManualLeaveEntryDialog({
       const message = leaveAlreadyExistsForEmployeeMessage(startDate);
       setError(message);
       toast.error(message);
+      return;
+    }
+
+    if (isWorkFromHomeLeave(leaveType) && wfhBlockedReason) {
+      setError(wfhBlockedReason);
+      toast.error(wfhBlockedReason);
       return;
     }
 
@@ -2240,16 +2275,21 @@ function ManualLeaveEntryDialog({
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-gray-500">Leave type</label>
             <div className="flex flex-wrap gap-2">
-              {LEAVE_TYPE_OPTIONS.map((opt) => (
+              {LEAVE_TYPE_OPTIONS.map((opt) => {
+                const wfhLocked =
+                  isWorkFromHomeLeave(opt.value) && Boolean(wfhBlockedReason);
+                return (
                 <button
                   key={opt.value}
                   type="button"
+                  disabled={wfhLocked}
                   onClick={() => {
+                    if (wfhLocked) return;
                     setLeaveType(opt.value);
                     if (isWorkFromHomeLeave(opt.value)) setDuration("full");
                   }}
                   className={cn(
-                    "h-9 px-3 rounded-full border text-xs font-semibold transition-colors",
+                    "h-9 px-3 rounded-full border text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                     leaveType === opt.value
                       ? "bg-[#2563EB] border-[#2563EB] text-white"
                       : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50",
@@ -2257,8 +2297,12 @@ function ManualLeaveEntryDialog({
                 >
                   {opt.label}
                 </button>
-              ))}
+                );
+              })}
             </div>
+            {wfhBlockedReason ? (
+              <p className="text-xs text-amber-700">{wfhBlockedReason}.</p>
+            ) : null}
           </div>
 
           <div className="space-y-1.5">
@@ -2384,7 +2428,7 @@ function ManualLeaveEntryDialog({
             <button type="button" onClick={() => onOpenChange(false)} disabled={submitting} className="h-10 px-4 rounded-lg border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50">
               Cancel
             </button>
-            <button type="submit" disabled={submitting} className="h-10 px-4 rounded-lg bg-[#2563EB] text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 hover:bg-[#1D4ED8] disabled:opacity-60">
+            <button type="submit" disabled={submitting || (isWorkFromHomeLeave(leaveType) && Boolean(wfhBlockedReason))} className="h-10 px-4 rounded-lg bg-[#2563EB] text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 hover:bg-[#1D4ED8] disabled:opacity-60">
               {submitting ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
               Save leave entry
             </button>
@@ -2405,13 +2449,7 @@ function ManualWfhEntryDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  employees: Array<{
-    id: number;
-    name: string | null;
-    email?: string | null;
-    avatar: string | null;
-    department: string | null;
-  }>;
+  employees: ManualEntryEmployee[];
   existingLeaves: Array<{
     userId: number;
     status: string;
@@ -2443,6 +2481,7 @@ function ManualWfhEntryDialog({
 
   const selectedEmployee =
     userId === "" ? null : employees.find((e) => e.id === userId) ?? null;
+  const wfhBlockedReason = employeeWfhBlockedReason(selectedEmployee);
 
   const blockedDates = useMemo(
     () => approvedLeaveDateKeysForUser(existingLeaves, userId),
@@ -2491,6 +2530,12 @@ function ManualWfhEntryDialog({
       const message = leaveAlreadyExistsForEmployeeMessage(startDate);
       setError(message);
       toast.error(message);
+      return;
+    }
+
+    if (wfhBlockedReason) {
+      setError(wfhBlockedReason);
+      toast.error(wfhBlockedReason);
       return;
     }
 
@@ -2558,6 +2603,9 @@ function ManualWfhEntryDialog({
                   ) : null}
                 </div>
               </div>
+            ) : null}
+            {wfhBlockedReason ? (
+              <p className="text-xs text-amber-700 pt-1">{wfhBlockedReason}.</p>
             ) : null}
           </div>
 
@@ -2654,7 +2702,7 @@ function ManualWfhEntryDialog({
             </button>
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || Boolean(wfhBlockedReason)}
               className="h-10 px-4 rounded-lg bg-teal-600 text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 hover:bg-teal-700 disabled:opacity-60"
             >
               {submitting ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}

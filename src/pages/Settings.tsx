@@ -17,6 +17,14 @@ import {
 import { WORK_TIMEZONE, WORK_TIMEZONE_LABEL } from "@/lib/timezone";
 import { departmentSelectOptions, departmentSelectScopeForRole } from "@/lib/department-options";
 import { isFinanceRoleOnly } from "@/lib/leave-policy";
+import { INVOICE_CURRENCIES } from "@/lib/invoice-store";
+import { hasPermission } from "@/lib/permissions";
+import { refreshPortalCurrencyViews } from "@/lib/dashboard-refresh";
+import {
+  cacheOrganizationProfile,
+  loadOrganizationProfile,
+  normalizeOrganizationProfile,
+} from "@/lib/organization-profile";
 import { motion } from "framer-motion";
 import {
   User,
@@ -73,6 +81,19 @@ function sameNotificationPrefs(a: NotificationPrefs, b: NotificationPrefs) {
   return NOTIFICATION_PREF_ITEMS.every((item) => a[item.key] === b[item.key]);
 }
 
+function canManagePortalCurrency(user: {
+  role?: string | null;
+  permissions?: string[] | null;
+} | null | undefined) {
+  if (!user) return false;
+  const role = String(user.role ?? "").toLowerCase();
+  if (role === "admin" || role === "finance") return true;
+  return hasPermission(
+    user as { role: "admin" | "manager" | "employee" | "hr" | "client" | "finance"; permissions?: string[] },
+    "invoices.manage",
+  );
+}
+
 async function invalidateProfileViews(utils: ReturnType<typeof trpc.useUtils>) {
   await Promise.all([
     utils.auth.me.invalidate(),
@@ -91,6 +112,7 @@ export default function Settings() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
   const financeOnly = isFinanceRoleOnly(user);
+  const canEditPortalCurrency = canManagePortalCurrency(user);
   const [activeTab, setActiveTab] = useState("profile");
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -106,6 +128,8 @@ export default function Settings() {
     avatar: null,
     department: "",
   });
+  const [portalCurrency, setPortalCurrency] = useState("INR");
+  const [savedPortalCurrency, setSavedPortalCurrency] = useState("INR");
 
   const [workspaceForm, setWorkspaceForm] = useState<WorkspaceForm>(readWorkspacePrefs);
   const [savedWorkspace, setSavedWorkspace] = useState<WorkspaceForm>(readWorkspacePrefs);
@@ -129,6 +153,23 @@ export default function Settings() {
     setNotificationPrefs(nextNotifications);
     setSavedNotificationPrefs(nextNotifications);
   }, [user]);
+
+  const billingProfileQuery = trpc.organization.getBillingProfile.useQuery(undefined, {
+    enabled: canEditPortalCurrency,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!billingProfileQuery.data?.baseCurrency) return;
+    const next = String(billingProfileQuery.data.baseCurrency).toUpperCase();
+    setSavedPortalCurrency((saved) => {
+      if (saved !== next) {
+        setPortalCurrency((current) => (current === saved ? next : current));
+      }
+      return next;
+    });
+  }, [billingProfileQuery.data?.baseCurrency]);
 
   useEffect(() => {
     if (user?.role !== "admin" && activeTab === "organization") {
@@ -173,7 +214,13 @@ export default function Settings() {
     },
   });
 
-  const isSaving = updateProfileMutation.isPending;
+  const updateCurrencyMutation = trpc.organization.updateBaseCurrency.useMutation({
+    onError: (error) => {
+      setSaveError(error.message || "Could not save portal currency.");
+    },
+  });
+
+  const isSaving = updateProfileMutation.isPending || updateCurrencyMutation.isPending;
 
   const profileDirty = useMemo(() => {
     return (
@@ -182,6 +229,9 @@ export default function Settings() {
       (profileForm.avatar ?? null) !== (savedProfile.avatar ?? null)
     );
   }, [profileForm, savedProfile]);
+
+  const currencyDirty =
+    canEditPortalCurrency && portalCurrency !== savedPortalCurrency;
 
   const workspaceDirty = useMemo(() => {
     return (
@@ -197,7 +247,7 @@ export default function Settings() {
 
   const canSave =
     activeTab === "profile"
-      ? profileDirty && profileForm.name.trim().length > 0
+      ? (profileDirty && profileForm.name.trim().length > 0) || currencyDirty
       : activeTab === "workspace"
         ? workspaceDirty
         : activeTab === "notifications"
@@ -213,17 +263,37 @@ export default function Settings() {
 
   const handleSaveProfile = async () => {
     setSaveError(null);
-    if (!profileForm.name.trim()) {
+    if (profileDirty && !profileForm.name.trim()) {
       setSaveError("Name is required.");
       return;
     }
 
     try {
-      await updateProfileMutation.mutateAsync({
-        name: profileForm.name.trim(),
-        avatar: profileForm.avatar,
-        department: profileForm.department.trim() || null,
-      });
+      if (profileDirty) {
+        await updateProfileMutation.mutateAsync({
+          name: profileForm.name.trim(),
+          avatar: profileForm.avatar,
+          department: profileForm.department.trim() || null,
+        });
+      }
+      if (currencyDirty) {
+        const updated = await updateCurrencyMutation.mutateAsync({
+          baseCurrency: portalCurrency,
+        });
+        const nextCurrency = String(updated.baseCurrency || portalCurrency).toUpperCase();
+        setPortalCurrency(nextCurrency);
+        setSavedPortalCurrency(nextCurrency);
+        cacheOrganizationProfile(
+          normalizeOrganizationProfile({
+            ...loadOrganizationProfile(),
+            baseCurrency: nextCurrency,
+          }),
+        );
+        await refreshPortalCurrencyViews(utils);
+      }
+      setSaveError(null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
     } catch {
       // Errors are handled in mutation onError handlers.
     }
@@ -387,6 +457,36 @@ export default function Settings() {
                     </p>
                   ) : null}
                 </div>
+                {canEditPortalCurrency ? (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-currency">
+                      Portal currency
+                    </label>
+                    <select
+                      id="profile-currency"
+                      value={portalCurrency}
+                      onChange={(e) => {
+                        setPortalCurrency(e.target.value.toUpperCase());
+                        setSaveError(null);
+                      }}
+                      disabled={billingProfileQuery.isLoading}
+                      className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] bg-white disabled:bg-gray-50 disabled:text-gray-500"
+                    >
+                      {INVOICE_CURRENCIES.map((item) => (
+                        <option key={item.code} value={item.code}>
+                          {item.label}
+                        </option>
+                      ))}
+                      {!INVOICE_CURRENCIES.some((item) => item.code === portalCurrency) && portalCurrency ? (
+                        <option value={portalCurrency}>{portalCurrency}</option>
+                      ) : null}
+                    </select>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Dashboard totals (revenue, income, expenses) and finance reports use this currency.
+                      Amounts in other currencies are converted with live exchange rates.
+                    </p>
+                  </div>
+                ) : null}
               </div>
             </motion.div>
           )}

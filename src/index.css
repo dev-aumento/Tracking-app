@@ -373,19 +373,43 @@ html.dark textarea::placeholder {
   color: var(--dm-text-soft);
 }
 
-/* Sidebar dark mode: match app shell charcoal, not bright blue gradient */
+/* Light mode: translucent slate gradient composited over white */
+.sidebar-chrome,
+.portal-slate-gradient {
+  background-color: #ffffff;
+  background-image: linear-gradient(
+    to bottom,
+    rgb(57 88 111 / 50%),
+    rgb(103 125 147 / 90%)
+  );
+}
+
+/* Dark mode: previous charcoal sidebar (no light-mode gradient) */
 html.dark .sidebar-chrome {
   background-image: none !important;
   background-color: #0b1220 !important;
+  border-right: 1px solid #1e293b;
+}
+
+/* Dark mode: hero boxes stay visible on the charcoal page */
+html.dark .portal-slate-gradient {
+  background-color: #151c2c !important;
+  background-image: linear-gradient(
+    to bottom,
+    rgb(57 88 111 / 80%),
+    rgb(103 125 147 / 50%)
+  ) !important;
 }
 
 html.dark .sidebar-chrome .bg-white,
+html.dark .sidebar-chrome .bg-white\/90,
 html.dark .sidebar-chrome .bg-white\/80,
 html.dark .sidebar-chrome .bg-white\/70 {
   background-color: #151c2c !important;
 }
 
-html.dark .sidebar-chrome .text-\[\#1e3a5f\] {
+html.dark .sidebar-chrome .text-\[\#1e3a5f\],
+html.dark .sidebar-chrome .text-\[\#39586f\] {
   color: #e5e7eb !important;
 }
 

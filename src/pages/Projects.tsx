@@ -173,12 +173,11 @@ function ProjectsWebPage() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
-      <div className="rounded-2xl bg-gradient-to-r from-[#1e3a5f] via-[#2563EB] to-[#3B82F6] px-6 py-5 text-white shadow-lg overflow-hidden relative">
-        <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_top_right,_white,_transparent_55%)]" />
+      <div className="rounded-2xl portal-slate-gradient px-6 py-5 text-white shadow-md overflow-hidden relative">
         <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap gap-4 items-center">
             <h1 className="text-2xl font-bold">Projects</h1>
-            <p className="text-sm text-blue-100 mt-1">
+            <p className="text-sm text-white/80 mt-1">
               {filteredProjects.length} project{filteredProjects.length === 1 ? "" : "s"}
               {filteredProjects.length > LIST_PAGE_SIZE
                 ? ` · page ${projectPagination.page} of ${projectPagination.totalPages}`
@@ -192,7 +191,7 @@ function ProjectsWebPage() {
                   setCreateError(null);
                   setShowCreate(true);
                 }}
-                className="h-10 px-4 bg-white text-[#2563EB] rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-blue-50 transition-colors">
+                className="h-10 px-4 bg-white text-[#39586f] rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-white/90 transition-colors">
                 <Plus size={16} /> Create
               </button>
             )}

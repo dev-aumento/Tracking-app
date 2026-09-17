@@ -17,6 +17,7 @@ import {
   downloadAttachmentFromGridFs,
   uploadAttachmentToGridFs,
 } from "./queries/attachment-storage";
+import { prepareBrowserVideo, needsVideoTranscode } from "./lib/video-preview";
 import { omitPasswordHash } from "./queries/users";
 import { notifyLeads } from "./lib/notify-leads";
 import { notifyTaskMembers, notifyTaskStakeholders } from "./lib/notify-task-members";
@@ -113,8 +114,84 @@ async function findUsersByIds(ids: number[]): Promise<Map<number, SafeUser>> {
 }
 
 function attachmentMeta(doc: TaskAttachmentDoc) {
-  const { dataBase64: _data, gridFsId: _grid, ...meta } = doc;
+  const {
+    dataBase64: _data,
+    gridFsId: _grid,
+    previewGridFsId: _preview,
+    posterBase64: _poster,
+    ...meta
+  } = doc;
   return meta;
+}
+
+async function ensureBrowserVideoPreview(
+  doc: TaskAttachmentDoc,
+  originalBuffer: Buffer,
+): Promise<{
+  doc: TaskAttachmentDoc;
+  data: Buffer;
+  mimeType: string;
+  posterBase64?: string;
+}> {
+  if (doc.previewGridFsId) {
+    try {
+      const preview = await downloadAttachmentFromGridFs(doc.previewGridFsId);
+      return {
+        doc,
+        data: preview,
+        mimeType: doc.previewMimeType || "video/mp4",
+        posterBase64: doc.posterBase64,
+      };
+    } catch {
+      // Fall through and rebuild the preview.
+    }
+  }
+
+  if (doc.posterBase64 && !needsVideoTranscode(doc.fileName, doc.mimeType)) {
+    return {
+      doc,
+      data: originalBuffer,
+      mimeType: doc.mimeType,
+      posterBase64: doc.posterBase64,
+    };
+  }
+
+  const prepared = await prepareBrowserVideo(originalBuffer, doc.fileName, doc.mimeType);
+  if (!prepared) {
+    return {
+      doc,
+      data: originalBuffer,
+      mimeType: doc.mimeType,
+      posterBase64: doc.posterBase64,
+    };
+  }
+
+  let previewGridFsId = doc.previewGridFsId;
+  if (prepared.transcoded) {
+    const stored = await uploadAttachmentToGridFs({
+      fileName: `${doc.fileName.replace(/\.[^.]+$/, "") || "video"}.mp4`,
+      mimeType: prepared.mimeType,
+      dataBase64: prepared.data.toString("base64"),
+    });
+    previewGridFsId = stored.gridFsId;
+  }
+
+  const posterBase64 = prepared.posterJpeg
+    ? prepared.posterJpeg.toString("base64")
+    : doc.posterBase64;
+
+  const updated = await updateById<TaskAttachmentDoc>(Collections.taskAttachments, doc.id, {
+    previewGridFsId,
+    previewMimeType: prepared.transcoded ? prepared.mimeType : doc.previewMimeType,
+    posterBase64,
+  });
+
+  return {
+    doc: updated ?? { ...doc, previewGridFsId, posterBase64, previewMimeType: prepared.mimeType },
+    data: prepared.data,
+    mimeType: prepared.mimeType,
+    posterBase64,
+  };
 }
 
 /** Files section / task.attachments: exclude comment-only media. */
@@ -1712,23 +1789,37 @@ export const taskRouter = createRouter({
   getAttachment: authedQuery
     .input(z.object({ id: z.number() }))
     .query(async ({ input }) => {
-      if (useTaskMock()) return mock.mockGetTaskAttachment(input.id);
+      if (useTaskMock()) {
+        const found = mock.mockGetTaskAttachment(input.id);
+        if (!found) return null;
+        const prepared = await prepareBrowserVideo(
+          Buffer.from(found.dataBase64, "base64"),
+          found.fileName,
+          found.mimeType,
+        );
+        if (!prepared) return { ...found, posterBase64: null };
+        return {
+          ...found,
+          mimeType: prepared.mimeType,
+          dataBase64: prepared.data.toString("base64"),
+          posterBase64: prepared.posterJpeg?.toString("base64") ?? null,
+        };
+      }
 
       await ensureSchema();
       const doc = await findById<TaskAttachmentDoc>(Collections.taskAttachments, input.id);
       if (!doc) return null;
 
-      if (doc.gridFsId) {
-        const buffer = await downloadAttachmentFromGridFs(doc.gridFsId);
-        return {
-          ...attachmentMeta(doc),
-          dataBase64: buffer.toString("base64"),
-        };
-      }
+      const originalBuffer = doc.gridFsId
+        ? await downloadAttachmentFromGridFs(doc.gridFsId)
+        : Buffer.from(doc.dataBase64 ?? "", "base64");
 
+      const prepared = await ensureBrowserVideoPreview(doc, originalBuffer);
       return {
-        ...attachmentMeta(doc),
-        dataBase64: doc.dataBase64 ?? "",
+        ...attachmentMeta(prepared.doc),
+        mimeType: prepared.mimeType,
+        dataBase64: prepared.data.toString("base64"),
+        posterBase64: prepared.posterBase64 ?? null,
       };
     }),
 
@@ -1768,7 +1859,16 @@ export const taskRouter = createRouter({
         uploadedBy: ctx.user.id,
         createdAt: now,
       });
-      return attachmentMeta(attachment);
+
+      try {
+        const originalBuffer = Buffer.from(input.dataBase64, "base64");
+        await ensureBrowserVideoPreview(attachment, originalBuffer);
+      } catch (error) {
+        console.error("[task.addAttachment] Video preview failed:", error);
+      }
+
+      const fresh = await findById<TaskAttachmentDoc>(Collections.taskAttachments, attachment.id);
+      return attachmentMeta(fresh ?? attachment);
     }),
 
   deleteAttachment: authedQuery
@@ -1781,6 +1881,9 @@ export const taskRouter = createRouter({
       const existing = await findById<TaskAttachmentDoc>(Collections.taskAttachments, input.id);
       if (existing?.gridFsId) {
         await deleteAttachmentFromGridFs(existing.gridFsId);
+      }
+      if (existing?.previewGridFsId) {
+        await deleteAttachmentFromGridFs(existing.previewGridFsId);
       }
       await attachmentCol.deleteOne({ id: input.id });
       return { success: true };

@@ -135,7 +135,10 @@ export default function AttendanceManagement() {
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden max-h-[70vh] overflow-y-auto">
             {filtered.map((row) => {
               const active = (selected?.userId ?? null) === row.userId;
-              const leaveTotal = row.attendance.leaveBreakdown?.totalLeaveDays ?? 0;
+              const leaveTotal =
+                (row.attendance.leaveBreakdown?.paidDays ?? 0) +
+                (row.attendance.leaveBreakdown?.sickDays ?? 0) +
+                (row.attendance.leaveBreakdown?.unpaidDays ?? 0);
               return (
                 <button
                   key={row.userId}
@@ -237,17 +240,6 @@ export default function AttendanceManagement() {
                         </td>
                         <td className="px-4 py-2.5 text-right font-medium">
                           {formatLeaveMetric(leaveBreakdown?.unpaidDays ?? 0)}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td className="px-4 py-2.5">
-                          Half day
-                          <span className="block text-xs text-gray-400 font-normal">
-                            Approved half-day leave
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right font-medium">
-                          {formatLeaveMetric(leaveBreakdown?.halfDays ?? 0)}
                         </td>
                       </tr>
                       <tr>

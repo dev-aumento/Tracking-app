@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router";
 import { ClipboardList, Pencil, Trash2 } from "lucide-react";
 import { trpc } from "@/providers/trpc";
+import { refreshDashboardPage } from "@/lib/dashboard-refresh";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,8 +18,10 @@ import {
   FinancePageHeader,
   StatusBadge,
   inputClass,
+  disabledInputClass,
   selectClass,
 } from "@/components/finance/FinancePageKit";
+import { useFxConvert } from "@/hooks/useFxConvert";
 
 type EstimateStatus = "draft" | "sent" | "accepted" | "declined" | "converted";
 
@@ -89,13 +93,13 @@ function statusTone(status: EstimateStatus) {
   return "neutral" as const;
 }
 
-const emptyForm = (): EstimateForm => ({
+const emptyForm = (currency = "INR"): EstimateForm => ({
   estimateNumber: `EST-${Date.now().toString().slice(-6)}`,
   customerId: null,
   customerName: "",
   estimateDate: todayIso(),
   validUntil: "",
-  currency: "INR",
+  currency,
   lineDescription: "",
   lineAmount: 0,
   items: [makeLineItem("", 0)],
@@ -117,6 +121,7 @@ export default function EstimatesPage() {
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState<EstimateForm>(emptyForm());
   const [error, setError] = useState<string | null>(null);
+  const { toBase, baseCurrency } = useFxConvert();
 
   const formTotal = useMemo(
     () => {
@@ -130,13 +135,22 @@ export default function EstimatesPage() {
   );
 
   const pipelineTotal = useMemo(
-    () => data.reduce((sum, row) => sum + (row.total ?? estimateTotal(row.items, row.taxPercent, row.adjustment)), 0),
-    [data],
+    () =>
+      data.reduce(
+        (sum, row) =>
+          sum +
+          toBase(
+            row.total ?? estimateTotal(row.items, row.taxPercent, row.adjustment),
+            row.currency,
+          ),
+        0,
+      ),
+    [data, toBase],
   );
 
   function openCreate() {
     setEditId(null);
-    setForm(emptyForm());
+    setForm(emptyForm(baseCurrency));
     setError(null);
     setOpen(true);
   }
@@ -150,7 +164,7 @@ export default function EstimatesPage() {
       customerName: row.customerName,
       estimateDate: row.estimateDate,
       validUntil: row.validUntil,
-      currency: row.currency || "INR",
+      currency: baseCurrency,
       lineDescription: first?.itemDetails ?? "",
       lineAmount: first ? first.quantity * first.rate : 0,
       items: row.items.length > 0 ? row.items : [makeLineItem("", 0)],
@@ -174,7 +188,7 @@ export default function EstimatesPage() {
       customerName: f.customerName,
       estimateDate: f.estimateDate,
       validUntil: f.validUntil,
-      currency: f.currency,
+      currency: baseCurrency,
       items: items.length > 0 ? items : [makeLineItem("Services", 0)],
       notes: f.notes,
       taxPercent: f.taxPercent,
@@ -197,6 +211,10 @@ export default function EstimatesPage() {
         await createMutation.mutateAsync(payload);
       }
       await utils.finance.estimates.list.invalidate();
+      await utils.invoice.list.invalidate();
+      await utils.finance.payments.list.invalidate();
+      await utils.finance.reports.summary.invalidate();
+      await refreshDashboardPage(utils);
       setOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save estimate.");
@@ -264,7 +282,17 @@ export default function EstimatesPage() {
                       <FinanceMoney value={total} currency={row.currency} />
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge label={row.status} tone={statusTone(row.status)} />
+                      <div className="flex items-center gap-2">
+                        <StatusBadge label={row.status} tone={statusTone(row.status)} />
+                        {row.status === "converted" && row.convertedInvoiceId != null ? (
+                          <Link
+                            to={`/admin/invoices/${row.convertedInvoiceId}`}
+                            className="text-xs text-[#2563EB] hover:underline"
+                          >
+                            View invoice
+                          </Link>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
@@ -320,10 +348,15 @@ export default function EstimatesPage() {
                   <option value="sent">Sent</option>
                   <option value="accepted">Accepted</option>
                   <option value="declined">Declined</option>
-                  <option value="converted">Converted</option>
+                  <option value="converted">Converted (creates invoice)</option>
                 </select>
               </Field>
             </div>
+            {form.status === "converted" ? (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                Saving as converted creates an invoice for this client and amount, and records a pending payment.
+              </p>
+            ) : null}
             <Field label="Customer">
               <select
                 className={selectClass}
@@ -417,16 +450,19 @@ export default function EstimatesPage() {
               </Field>
               <Field label="Currency">
                 <input
-                  className={inputClass}
-                  value={form.currency}
-                  onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))}
+                  className={disabledInputClass}
+                  value={baseCurrency}
+                  readOnly
+                  disabled
+                  aria-readonly="true"
+                  title="Portal currency from Settings → Profile"
                 />
               </Field>
             </div>
             <div className="rounded-lg bg-gray-50 px-3 py-2 text-sm flex justify-between">
               <span className="text-gray-600">Total</span>
               <span className="font-semibold text-gray-800">
-                <FinanceMoney value={formTotal} currency={form.currency} />
+                <FinanceMoney value={formTotal} currency={baseCurrency} />
               </span>
             </div>
             <Field label="Notes">

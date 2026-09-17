@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { Banknote, Pencil, Trash2 } from "lucide-react";
 import { trpc } from "@/providers/trpc";
 import { formatMoney, invoiceTotal } from "@/lib/invoice-store";
+import { refreshDashboardPage } from "@/lib/dashboard-refresh";
+import { useFxConvert } from "@/hooks/useFxConvert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,11 +17,19 @@ import {
   FinanceLoading,
   FinanceMoney,
   FinancePageHeader,
+  StatusBadge,
   inputClass,
   selectClass,
 } from "@/components/finance/FinancePageKit";
+import {
+  type CustomerRecord,
+  quickCustomerCreateValues,
+} from "@/components/customers/NewCustomerForm";
+import { CustomerSearchSelect } from "@/components/customers/CustomerSearchSelect";
 
-type PaymentMethod = "bank_transfer" | "upi" | "cash" | "cheque" | "card" | "other";
+type PaymentMethod = "bank_transfer" | "upi" | "cash" | "cheque" | "card" | "other" | "bank_remittance";
+type RemittanceType = "forex" | "domestic";
+type PaymentStatus = "pending" | "received";
 
 type PaymentForm = {
   invoiceId: number | null;
@@ -31,15 +41,24 @@ type PaymentForm = {
   bankAccountId: number | null;
   reference: string;
   notes: string;
+  remittanceType: RemittanceType | null;
+  taxAmount: number;
+  status: PaymentStatus;
 };
 
 const METHOD_LABELS: Record<PaymentMethod, string> = {
   bank_transfer: "Bank transfer",
+  bank_remittance: "Bank remittance",
   upi: "UPI",
   cash: "Cash",
   cheque: "Cheque",
   card: "Card",
   other: "Other",
+};
+
+const STATUS_LABELS: Record<PaymentStatus, string> = {
+  pending: "Pending",
+  received: "Received",
 };
 
 function todayIso() {
@@ -63,6 +82,9 @@ const emptyForm = (): PaymentForm => ({
   bankAccountId: null,
   reference: "",
   notes: "",
+  remittanceType: null,
+  taxAmount: 0,
+  status: "received",
 });
 
 export default function PaymentsPage() {
@@ -70,29 +92,39 @@ export default function PaymentsPage() {
   const { data = [], isLoading } = trpc.finance.payments.list.useQuery();
   const { data: invoices = [] } = trpc.invoice.list.useQuery();
   const { data: customers = [] } = trpc.customer.list.useQuery();
-  const { data: banks = [] } = trpc.finance.bankAccounts.list.useQuery();
   const createMutation = trpc.finance.payments.create.useMutation();
   const updateMutation = trpc.finance.payments.update.useMutation();
   const deleteMutation = trpc.finance.payments.delete.useMutation();
+  const createCustomerMutation = trpc.customer.create.useMutation();
 
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState<PaymentForm>(emptyForm());
   const [error, setError] = useState<string | null>(null);
-
-  const bankMap = useMemo(
-    () => new Map(banks.map((b) => [b.id, b.name])),
-    [banks],
-  );
+  const [createdCustomers, setCreatedCustomers] = useState<CustomerRecord[]>([]);
 
   const invoiceMap = useMemo(
     () => new Map(invoices.map((i) => [i.id, i])),
     [invoices],
   );
+  const allCustomers = useMemo(() => {
+    const byId = new Map<number, CustomerRecord>();
+    for (const customer of [...createdCustomers, ...(customers as CustomerRecord[])]) {
+      byId.set(customer.id, customer);
+    }
+    return [...byId.values()];
+  }, [customers, createdCustomers]);
+  const { toBase } = useFxConvert();
 
   const totalReceived = useMemo(
-    () => data.reduce((sum, p) => sum + p.amount, 0),
-    [data],
+    () =>
+      data.reduce((sum, payment) => {
+        if (payment.status === "pending") return sum;
+        const invoice =
+          payment.invoiceId != null ? invoiceMap.get(payment.invoiceId) : undefined;
+        return sum + toBase(payment.amount, invoice?.currency);
+      }, 0),
+    [data, invoiceMap, toBase],
   );
 
   function openCreate() {
@@ -114,6 +146,9 @@ export default function PaymentsPage() {
       bankAccountId: row.bankAccountId,
       reference: row.reference,
       notes: row.notes,
+      remittanceType: row.method === "bank_remittance" ? row.remittanceType ?? null : null,
+      taxAmount: row.method === "bank_remittance" && row.remittanceType === "domestic" ? row.taxAmount ?? 0 : 0,
+      status: row.status === "pending" ? "pending" : "received",
     });
     setError(null);
     setOpen(true);
@@ -140,7 +175,13 @@ export default function PaymentsPage() {
       setError("Payment date is required.");
       return;
     }
+    if (form.method === "bank_remittance" && !form.remittanceType) {
+      setError("Select whether this bank remittance is a forex or domestic transfer.");
+      return;
+    }
     try {
+      const isRemittance = form.method === "bank_remittance";
+      const isDomestic = isRemittance && form.remittanceType === "domestic";
       const payload = {
         invoiceId: form.invoiceId,
         customerId: form.customerId,
@@ -151,6 +192,9 @@ export default function PaymentsPage() {
         bankAccountId: form.bankAccountId,
         reference: form.reference,
         notes: form.notes,
+        remittanceType: isRemittance ? form.remittanceType : null,
+        taxAmount: isDomestic ? form.taxAmount : 0,
+        status: form.status,
       };
       if (editId != null) {
         await updateMutation.mutateAsync({ id: editId, ...payload });
@@ -158,8 +202,9 @@ export default function PaymentsPage() {
         await createMutation.mutateAsync(payload);
       }
       await utils.finance.payments.list.invalidate();
-      await utils.finance.bankAccounts.list.invalidate();
       await utils.invoice.list.invalidate();
+      await utils.finance.reports.summary.invalidate();
+      await refreshDashboardPage(utils);
       setOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save payment.");
@@ -196,7 +241,7 @@ export default function PaymentsPage() {
         <FinanceEmptyState
           icon={Banknote}
           title="No payments recorded"
-          description="Record customer payments to update bank balances and invoice status."
+          description="Record customer payments to update invoice status."
           actionLabel="Record payment"
           onAction={openCreate}
         />
@@ -209,7 +254,7 @@ export default function PaymentsPage() {
                 <th className="text-left font-medium px-4 py-3">Customer</th>
                 <th className="text-left font-medium px-4 py-3">Invoice</th>
                 <th className="text-left font-medium px-4 py-3">Method</th>
-                <th className="text-left font-medium px-4 py-3">Bank</th>
+                <th className="text-left font-medium px-4 py-3">Status</th>
                 <th className="text-right font-medium px-4 py-3">Amount</th>
                 <th className="text-right font-medium px-4 py-3">Actions</th>
               </tr>
@@ -226,14 +271,27 @@ export default function PaymentsPage() {
                       ? invoiceMap.get(row.invoiceId)?.invoiceNumber ?? `#${row.invoiceId}`
                       : "—"}
                   </td>
-                  <td className="px-4 py-3 text-gray-600 capitalize">
-                    {METHOD_LABELS[row.method]}
+                  <td className="px-4 py-3 text-gray-600">
+                    {METHOD_LABELS[row.method] ?? row.method}
+                    {row.method === "bank_remittance" && row.remittanceType
+                      ? ` · ${row.remittanceType === "forex" ? "Forex" : "Domestic"}`
+                      : ""}
                   </td>
-                  <td className="px-4 py-3 text-gray-500">
-                    {row.bankAccountId != null ? bankMap.get(row.bankAccountId) ?? "—" : "—"}
+                  <td className="px-4 py-3">
+                    <StatusBadge
+                      label={STATUS_LABELS[row.status === "pending" ? "pending" : "received"]}
+                      tone={row.status === "pending" ? "warning" : "success"}
+                    />
                   </td>
                   <td className="px-4 py-3 text-right font-semibold">
-                    <FinanceMoney value={row.amount} />
+                    <FinanceMoney
+                      value={row.amount}
+                      currency={
+                        row.invoiceId != null
+                          ? invoiceMap.get(row.invoiceId)?.currency
+                          : undefined
+                      }
+                    />
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
@@ -263,7 +321,7 @@ export default function PaymentsPage() {
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-visible">
           <DialogHeader>
             <DialogTitle>{editId != null ? "Edit payment" : "Record payment"}</DialogTitle>
           </DialogHeader>
@@ -279,42 +337,38 @@ export default function PaymentsPage() {
                 <option value="">No invoice linked</option>
                 {invoices.map((inv) => (
                   <option key={inv.id} value={inv.id}>
-                    {inv.invoiceNumber} — {inv.customerName} ({formatMoney(invoiceTotal(inv))})
+                    {inv.invoiceNumber} — {inv.customerName} ({formatMoney(invoiceTotal(inv), inv.currency)})
                   </option>
                 ))}
               </select>
             </Field>
             <Field label="Customer">
-              <select
-                className={selectClass}
+              <CustomerSearchSelect
+                customers={allCustomers}
                 value={form.customerId ?? ""}
-                onChange={(e) => {
-                  const id = e.target.value ? Number(e.target.value) : null;
-                  const customer = customers.find((c) => c.id === id);
+                creating={createCustomerMutation.isPending}
+                inputClassName={inputClass}
+                placeholder="Type to search or add a customer"
+                onChange={(customer) => {
                   setForm((f) => ({
                     ...f,
-                    customerId: id,
-                    customerName: customer?.displayName ?? f.customerName,
+                    customerId: customer?.id ?? null,
+                    customerName: customer?.displayName ?? "",
                   }));
                 }}
-              >
-                <option value="">Select customer…</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.displayName}
-                  </option>
-                ))}
-              </select>
+                onCreate={async (name) => {
+                  const created = await createCustomerMutation.mutateAsync(
+                    quickCustomerCreateValues(name),
+                  );
+                  const record = created as CustomerRecord;
+                  setCreatedCustomers((prev) =>
+                    prev.some((item) => item.id === record.id) ? prev : [record, ...prev],
+                  );
+                  await utils.customer.list.invalidate();
+                  return record;
+                }}
+              />
             </Field>
-            {!form.customerId ? (
-              <Field label="Customer name">
-                <input
-                  className={inputClass}
-                  value={form.customerName}
-                  onChange={(e) => setForm((f) => ({ ...f, customerName: e.target.value }))}
-                />
-              </Field>
-            ) : null}
             <div className="grid grid-cols-2 gap-3">
               <Field label="Amount">
                 <input
@@ -340,9 +394,15 @@ export default function PaymentsPage() {
                 <select
                   className={selectClass}
                   value={form.method}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, method: e.target.value as PaymentMethod }))
-                  }
+                  onChange={(e) => {
+                    const method = e.target.value as PaymentMethod;
+                    setForm((f) => ({
+                      ...f,
+                      method,
+                      remittanceType: method === "bank_remittance" ? f.remittanceType : null,
+                      taxAmount: method === "bank_remittance" ? f.taxAmount : 0,
+                    }));
+                  }}
                 >
                   {(Object.keys(METHOD_LABELS) as PaymentMethod[]).map((m) => (
                     <option key={m} value={m}>
@@ -351,23 +411,16 @@ export default function PaymentsPage() {
                   ))}
                 </select>
               </Field>
-              <Field label="Bank account">
+              <Field label="Status">
                 <select
                   className={selectClass}
-                  value={form.bankAccountId ?? ""}
+                  value={form.status}
                   onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      bankAccountId: e.target.value ? Number(e.target.value) : null,
-                    }))
+                    setForm((f) => ({ ...f, status: e.target.value as PaymentStatus }))
                   }
                 >
-                  <option value="">None</option>
-                  {banks.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
+                  <option value="received">Received</option>
+                  <option value="pending">Pending</option>
                 </select>
               </Field>
             </div>
@@ -379,6 +432,57 @@ export default function PaymentsPage() {
                 placeholder="Txn ID / cheque no."
               />
             </Field>
+            {form.method === "bank_remittance" ? (
+              <div className="rounded-lg border border-gray-200 bg-gray-50/70 dark:bg-[#1f2937] px-3 py-3 space-y-3">
+                <p className="text-xs font-medium text-gray-600">Is this a forex or domestic transfer?</p>
+                <div className="flex flex-wrap gap-4">
+                  <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.remittanceType === "forex"}
+                      onChange={() =>
+                        setForm((f) => ({
+                          ...f,
+                          remittanceType: f.remittanceType === "forex" ? null : "forex",
+                          taxAmount: 0,
+                        }))
+                      }
+                      className="accent-[#2563EB]"
+                    />
+                    Forex transfer
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.remittanceType === "domestic"}
+                      onChange={() =>
+                        setForm((f) => ({
+                          ...f,
+                          remittanceType: f.remittanceType === "domestic" ? null : "domestic",
+                        }))
+                      }
+                      className="accent-[#2563EB]"
+                    />
+                    Domestic transfer
+                  </label>
+                </div>
+                {form.remittanceType === "domestic" ? (
+                  <Field label="Tax">
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      className={inputClass}
+                      value={form.taxAmount}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, taxAmount: Number(e.target.value) || 0 }))
+                      }
+                      placeholder="Tax amount"
+                    />
+                  </Field>
+                ) : null}
+              </div>
+            ) : null}
             <Field label="Notes">
               <textarea
                 className={`${inputClass} h-20 py-2`}

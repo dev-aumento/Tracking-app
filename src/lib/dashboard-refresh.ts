@@ -28,6 +28,17 @@ export async function refreshDashboardPage(utils: TrpcUtils) {
   ]);
 }
 
+/** After portal currency changes, refresh totals, FX, and formatted money. */
+export async function refreshPortalCurrencyViews(utils: TrpcUtils) {
+  await Promise.all([
+    utils.organization.getBillingProfile.invalidate(undefined, { refetchType: "all" }),
+    utils.finance.fx.rates.invalidate(undefined, { refetchType: "all" }),
+    utils.finance.reports.summary.invalidate(undefined, { refetchType: "all" }),
+    refreshDashboardPage(utils),
+  ]);
+  requestDashboardRefresh();
+}
+
 /** Cache dashboard data briefly so remounts / soft navigations don't double-fetch. */
 export const dashboardQueryOptions = {
   staleTime: 30_000,

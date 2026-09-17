@@ -1,6 +1,6 @@
 import type { PendingTaskAttachment } from "@/components/tasks/TaskFilesSection";
 import type { CommentMediaRef } from "@/lib/rich-comment";
-import { assertAttachmentFileSize } from "@/lib/task-files";
+import { assertAttachmentFileSize, createMediaPreviewObjectUrl, resolveFileMimeType } from "@/lib/task-files";
 
 export type StagedTaskMedia = CommentMediaRef & {
   clientId: string;
@@ -20,13 +20,14 @@ export async function stageTaskMediaFile(
   assertAttachmentFileSize(file);
   const id = nextStagingMediaId--;
   const clientId = `staged-media-${id}-${Date.now()}`;
+  const mimeType = resolveFileMimeType(file);
   const attachment: PendingTaskAttachment = {
     clientId,
     fileName: file.name,
-    mimeType: file.type || "application/octet-stream",
+    mimeType,
     fileSize: file.size,
     file,
-    previewUrl: URL.createObjectURL(file),
+    previewUrl: createMediaPreviewObjectUrl(file, file.name, mimeType),
     stagingMediaId: id,
     // Comment / description embeds stay out of the Files section.
     listedInFiles: options?.listedInFiles ?? false,

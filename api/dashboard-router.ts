@@ -11,7 +11,6 @@ import {
 } from "./queries/connection";
 import { Collections } from "@db/mongo/collections";
 import type {
-  BankAccountDoc,
   EmployeeDoc,
   ExpenseDoc,
   InvoiceDoc,
@@ -43,6 +42,8 @@ import {
   workZoneWallTimeToUtc,
 } from "@/lib/timezone";
 import { invoiceTotal } from "@/lib/invoice-store";
+import { roundMoney } from "@/lib/currency-fx";
+import { createFxConverter } from "./lib/currency-fx";
 
 function roundHours(minutes: number) {
   return Math.round((minutes / 60) * 10) / 10;
@@ -1015,21 +1016,20 @@ export const dashboardRouter = createRouter({
     let revenueLastMonth = 0;
     let metricsCurrency = "INR";
     try {
+      const fx = await createFxConverter(tenant.organizationId);
+      metricsCurrency = fx.baseCurrency;
       const invoiceCol = await getCollection<InvoiceDoc>(Collections.invoices);
       const invoices = await invoiceCol.find({ ...tenant }).toArray();
       for (const inv of invoices) {
-        const total = invoiceTotal(inv);
-        const currency = inv.currency || "INR";
+        const total = fx.toBase(invoiceTotal(inv), inv.currency);
         if (inv.status === "draft" || inv.status === "sent") {
           pendingInvoicesAmount += total;
           pendingInvoicesCount += 1;
-          metricsCurrency = currency;
         }
         if (inv.status === "paid") {
           const paidAt = inv.updatedAt instanceof Date ? inv.updatedAt : new Date(inv.updatedAt);
           if (paidAt >= thisMonthStartDate && paidAt < nextMonthStartDate) {
             revenueThisMonth += total;
-            metricsCurrency = currency;
           } else if (paidAt >= lastMonthStartDate && paidAt < thisMonthStartDate) {
             revenueLastMonth += total;
           }
@@ -1055,9 +1055,9 @@ export const dashboardRouter = createRouter({
           : 0,
       teamUtilizationPct,
       utilizationDeltaPct: teamUtilizationPct - lastUtilization,
-      pendingInvoicesAmount: Math.round(pendingInvoicesAmount),
+      pendingInvoicesAmount: roundMoney(pendingInvoicesAmount),
       pendingInvoicesCount,
-      revenueThisMonth: Math.round(revenueThisMonth),
+      revenueThisMonth: roundMoney(revenueThisMonth),
       revenueDeltaPct: hoursDeltaPct(revenueThisMonth, revenueLastMonth),
       currency: metricsCurrency,
     };
@@ -1126,6 +1126,7 @@ export const dashboardRouter = createRouter({
       invoiceCol.find({ ...tenant }).sort({ createdAt: -1 }).toArray(),
       expenseCol.find({ ...tenant }).toArray(),
     ]);
+    const fx = await createFxConverter(tenant.organizationId);
 
     const now = new Date();
     const nowParts = workZoneDateParts(now);
@@ -1190,7 +1191,7 @@ export const dashboardRouter = createRouter({
       0,
     );
 
-    let currency = "INR";
+    let currency = fx.baseCurrency;
     let revenueYtd = 0;
     let receivedYtd = 0;
     let outstandingAmount = 0;
@@ -1249,15 +1250,14 @@ export const dashboardRouter = createRouter({
     };
 
     for (const inv of invoices) {
-      const total = invoiceTotal(inv);
-      currency = inv.currency || currency;
+      const total = fx.toBase(invoiceTotal(inv), inv.currency);
       const invoiceDate = inv.invoiceDate || todayKey;
       const invParts = (() => {
         const [y, m] = invoiceDate.split("-").map(Number);
         return { year: y || nowParts.year, month: m || nowParts.month };
       })();
 
-      if (inv.status === "paid" || inv.status === "sent") {
+      if (inv.status === "paid") {
         if (inSelectedPeriod(invoiceDate)) {
           revenueYtd += total;
         }
@@ -1300,7 +1300,7 @@ export const dashboardRouter = createRouter({
             date: formatInWorkZone(paidAt, { day: "2-digit", month: "short", year: "numeric" }),
             type: "Payment Received",
             description: `${inv.invoiceNumber} · ${inv.customerName}`,
-            amount: Math.round(total),
+            amount: roundMoney(total),
             status: "Received",
             statusTone: "received",
             href: `/admin/invoices/${inv.id}`,
@@ -1324,8 +1324,8 @@ export const dashboardRouter = createRouter({
             invoiceNumber: inv.invoiceNumber,
             customerName: inv.customerName,
             dueDate: due,
-            amount: Math.round(total),
-            currency: inv.currency || currency,
+            amount: roundMoney(total),
+            currency: fx.baseCurrency,
           });
         }
         outstandingRows.push({
@@ -1333,9 +1333,9 @@ export const dashboardRouter = createRouter({
           invoiceNumber: inv.invoiceNumber,
           customerName: inv.customerName,
           dueDate: due,
-          amount: Math.round(total),
+          amount: roundMoney(total),
           daysOverdue,
-          currency: inv.currency || currency,
+          currency: fx.baseCurrency,
         });
 
         const created =
@@ -1350,7 +1350,7 @@ export const dashboardRouter = createRouter({
             date: formatInWorkZone(created, { day: "2-digit", month: "short", year: "numeric" }),
             type: "Invoice Sent",
             description: `${inv.invoiceNumber} · ${inv.customerName}`,
-            amount: Math.round(total),
+            amount: roundMoney(total),
             status: "Sent",
             statusTone: "sent",
             href: `/admin/invoices/${inv.id}`,
@@ -1368,7 +1368,10 @@ export const dashboardRouter = createRouter({
       if (expense.status !== "recorded") continue;
       const dateKey = expense.expenseDate;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey ?? "")) continue;
-      const amount = (expense.amount ?? 0) + (expense.taxAmount ?? 0);
+      const amount = fx.toBase(
+        (expense.amount ?? 0) + (expense.taxAmount ?? 0),
+        expense.currency,
+      );
       if (amount <= 0) continue;
 
       if (inSelectedPeriod(dateKey)) {
@@ -1394,7 +1397,7 @@ export const dashboardRouter = createRouter({
           description: expense.vendorName
             ? `${category} · ${expense.vendorName}`
             : category,
-          amount: -Math.round(amount),
+          amount: -roundMoney(amount),
           status: "Paid",
           statusTone: "paid",
           href: "/finance/expenses",
@@ -1413,36 +1416,16 @@ export const dashboardRouter = createRouter({
       }
     }
 
-    expensesYtd = Math.round(expensesYtd);
-    expensesLastYear = Math.round(expensesLastYear);
-    const netProfitYtd = Math.round(receivedYtd - expensesYtd);
-    const netProfitLastYear = Math.round(receivedLastYearYtd - expensesLastYear);
-    const bankCol = await getCollection<BankAccountDoc>(Collections.bankAccounts);
-    const bankDocs = await bankCol
-      .find({ ...tenant, isActive: { $ne: false } })
-      .sort({ createdAt: -1 })
-      .toArray();
-    const bankAccounts = bankDocs.map((bank) => {
-      const digits = String(bank.accountNumber ?? "").replace(/\D/g, "");
-      const mask = digits.length >= 4 ? `•••• ${digits.slice(-4)}` : digits ? `•••• ${digits}` : "—";
-      const label =
-        bank.bankName && bank.name
-          ? `${bank.bankName} — ${bank.name}`
-          : bank.name || bank.bankName || "Bank account";
-      return {
-        id: bank.id,
-        name: label,
-        mask,
-        balance: Math.round(bank.currentBalance ?? 0),
-      };
-    });
-    const cashInBank = bankAccounts.reduce((sum, bank) => sum + bank.balance, 0);
+    expensesYtd = roundMoney(expensesYtd);
+    expensesLastYear = roundMoney(expensesLastYear);
+    const netProfitYtd = roundMoney(receivedYtd - expensesYtd);
+    const netProfitLastYear = roundMoney(receivedLastYearYtd - expensesLastYear);
 
     const expenseBreakdown = [...expensesByCategory.entries()]
       .sort((a, b) => b[1] - a[1])
       .map(([name, amount], i) => ({
         name,
-        amount: Math.round(amount),
+        amount: roundMoney(amount),
         percent:
           expensesYtd > 0 ? Math.round((amount / expensesYtd) * 1000) / 10 : 0,
         color: EXPENSE_COLORS[i % EXPENSE_COLORS.length],
@@ -1455,16 +1438,16 @@ export const dashboardRouter = createRouter({
     );
     const revenueOverview = monthLabels.map((label, i) => ({
       label,
-      thisYear: Math.round(thisYearMonthly[i]),
-      lastYear: Math.round(lastYearMonthly[i]),
+      thisYear: roundMoney(thisYearMonthly[i]),
+      lastYear: roundMoney(lastYearMonthly[i]),
     }));
 
     const daysInMonth = new Date(nowParts.year, nowParts.month, 0).getDate();
     const cashFlowDaily = Array.from({ length: daysInMonth }, (_, i) => {
       const day = i + 1;
       const dateKey = `${thisMonthPrefix}${String(day).padStart(2, "0")}`;
-      const inflow = Math.round(cashInflowByDay.get(dateKey) ?? 0);
-      const outflow = Math.round(cashOutflowByDay.get(dateKey) ?? 0);
+      const inflow = roundMoney(cashInflowByDay.get(dateKey) ?? 0);
+      const outflow = roundMoney(cashOutflowByDay.get(dateKey) ?? 0);
       return {
         label: String(day),
         net: inflow - outflow,
@@ -1488,20 +1471,19 @@ export const dashboardRouter = createRouter({
         startDate: periodStartKey,
         endDate: periodEndKey,
       },
-      totalRevenueYtd: Math.round(revenueYtd),
+      totalRevenueYtd: roundMoney(revenueYtd),
       revenueYoYPct: hoursDeltaPct(revenueYtd, revenueLastYearYtd),
-      totalReceivedYtd: Math.round(receivedYtd),
+      totalReceivedYtd: roundMoney(receivedYtd),
       receivedYoYPct: hoursDeltaPct(receivedYtd, receivedLastYearYtd),
-      outstandingReceivable: Math.round(outstandingAmount),
+      outstandingReceivable: roundMoney(outstandingAmount),
       outstandingMoMPct: hoursDeltaPct(outstandingAmount, outstandingLastMonth),
       totalExpensesYtd: expensesYtd,
       expensesYoYPct: hoursDeltaPct(expensesYtd, expensesLastYear),
       netProfitYtd,
       netProfitYoYPct: hoursDeltaPct(netProfitYtd, netProfitLastYear),
-      cashInBank,
       revenueOverview,
       incomeVsExpense: {
-        income: Math.round(revenueYtd),
+        income: roundMoney(revenueYtd),
         expense: expensesYtd,
         incomePct:
           revenueYtd + expensesYtd > 0
@@ -1519,10 +1501,10 @@ export const dashboardRouter = createRouter({
         outflows: cashOutflows,
       },
       outstandingSummary: {
-        total: Math.round(outstandingAmount),
-        d0_30: Math.round(aging.d0_30),
-        d31_60: Math.round(aging.d31_60),
-        d61_plus: Math.round(aging.d61_90 + aging.d90_plus),
+        total: roundMoney(outstandingAmount),
+        d0_30: roundMoney(aging.d0_30),
+        d31_60: roundMoney(aging.d31_60),
+        d61_plus: roundMoney(aging.d61_90 + aging.d90_plus),
       },
       outstandingInvoices: outstandingRows.slice(0, 8),
       recentTransactions: recentTransactions.slice(0, 8),
@@ -1530,27 +1512,26 @@ export const dashboardRouter = createRouter({
       receivableAging: [
         {
           label: "0-30 days",
-          amount: Math.round(aging.d0_30),
+          amount: roundMoney(aging.d0_30),
           percent: Math.round((aging.d0_30 / agingTotal) * 1000) / 10,
         },
         {
           label: "31-60 days",
-          amount: Math.round(aging.d31_60),
+          amount: roundMoney(aging.d31_60),
           percent: Math.round((aging.d31_60 / agingTotal) * 1000) / 10,
         },
         {
           label: "61-90 days",
-          amount: Math.round(aging.d61_90),
+          amount: roundMoney(aging.d61_90),
           percent: Math.round((aging.d61_90 / agingTotal) * 1000) / 10,
         },
         {
           label: "90+ days",
-          amount: Math.round(aging.d90_plus),
+          amount: roundMoney(aging.d90_plus),
           percent: Math.round((aging.d90_plus / agingTotal) * 1000) / 10,
         },
       ],
       upcomingInvoices: upcomingInvoices.slice(0, 5),
-      bankAccounts,
     };
   }),
 });

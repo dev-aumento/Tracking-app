@@ -9,6 +9,9 @@ import type { OrganizationBillingProfile, OrganizationDoc } from "@db/mongo/type
 import { findOrganizationById, requireOrganizationId } from "./lib/tenant";
 import { hasPermission } from "./lib/permissions";
 import { Workspace } from "@contracts/constants";
+import { INVOICE_CURRENCIES } from "@/lib/invoice-store";
+import { normalizeCurrency } from "@/lib/currency-fx";
+import { rememberMockOrgBaseCurrency } from "./lib/currency-fx";
 
 const additionalFieldSchema = z.object({
   id: z.string().max(80),
@@ -99,15 +102,26 @@ function canReadBillingProfile(user: {
   role?: string | null;
   permissions?: string[] | null;
 }) {
+  if (canWritePortalCurrency(user)) return true;
   if (hasPermission(user, "invoices.manage")) return true;
   if (hasPermission(user, "customers.manage")) return true;
-  if (String(user.role ?? "").toLowerCase() === "admin") return true;
   return false;
 }
 
 function canWriteBillingProfile(user: { role?: string | null }) {
   return String(user.role ?? "").toLowerCase() === "admin";
 }
+
+function canWritePortalCurrency(user: {
+  role?: string | null;
+  permissions?: string[] | null;
+}) {
+  if (canWriteBillingProfile(user)) return true;
+  if (String(user.role ?? "").toLowerCase() === "finance") return true;
+  return hasPermission(user as { role: string; permissions?: string[] }, "invoices.manage");
+}
+
+const PORTAL_CURRENCY_CODES = new Set<string>(INVOICE_CURRENCIES.map((item) => item.code));
 
 function normalizeProfile(
   profile: Partial<OrganizationBillingProfile> | null | undefined,
@@ -184,6 +198,7 @@ export const organizationRouter = createRouter({
 
       if (useMock()) {
         mockBillingByOrgId.set(orgId, profile);
+        rememberMockOrgBaseCurrency(orgId, profile.baseCurrency);
         return toClientProfile(orgId, profile, { billingProfileSaved: true });
       }
 
@@ -195,6 +210,67 @@ export const organizationRouter = createRouter({
 
       const updated = await updateById<OrganizationDoc>(Collections.organizations, orgId, {
         name: profile.name.trim() || existing.name,
+        billingProfile: profile,
+        updatedAt: new Date(),
+      });
+
+      if (!updated) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Organization not found" });
+      }
+
+      return toClientProfile(
+        orgId,
+        normalizeProfile(updated.billingProfile, updated.name),
+        { billingProfileSaved: true },
+      );
+    }),
+
+  updateBaseCurrency: authedQuery
+    .input(
+      z.object({
+        baseCurrency: z.string().min(3).max(10),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!canWritePortalCurrency(ctx.user)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have permission to change the portal currency",
+        });
+      }
+
+      const baseCurrency = normalizeCurrency(input.baseCurrency);
+      if (!PORTAL_CURRENCY_CODES.has(baseCurrency)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Unsupported currency",
+        });
+      }
+
+      const orgId = requireOrganizationId(ctx.user);
+
+      if (useMock()) {
+        const current = mockBillingByOrgId.get(orgId);
+        const profile = normalizeProfile(
+          { ...current, baseCurrency },
+          current?.name || Workspace.name,
+        );
+        mockBillingByOrgId.set(orgId, profile);
+        rememberMockOrgBaseCurrency(orgId, profile.baseCurrency);
+        return toClientProfile(orgId, profile, { billingProfileSaved: true });
+      }
+
+      await ensureSchema();
+      const existing = await findById<OrganizationDoc>(Collections.organizations, orgId);
+      if (!existing) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Organization not found" });
+      }
+
+      const profile = normalizeProfile(
+        { ...(existing.billingProfile ?? {}), baseCurrency },
+        existing.billingProfile?.name || existing.name || Workspace.name,
+      );
+      const updated = await updateById<OrganizationDoc>(Collections.organizations, orgId, {
         billingProfile: profile,
         updatedAt: new Date(),
       });

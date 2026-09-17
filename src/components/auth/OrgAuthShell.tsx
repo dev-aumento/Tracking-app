@@ -7,7 +7,7 @@ type OrgAuthShellProps = {
 };
 
 export function OrgAuthShell({ children, organizationLabel }: OrgAuthShellProps) {
-  const orgDisplay = organizationLabel ?? (typeof window !== "undefined" ? "FlowTicX" : Workspace.name);
+  const orgDisplay = organizationLabel ?? (typeof window !== "undefined" ? "Aaso" : Workspace.name);
 
   return (
     <div className="min-h-screen flex flex-col lg:flex-row">

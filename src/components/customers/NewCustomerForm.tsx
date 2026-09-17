@@ -85,7 +85,7 @@ const emptyContactPerson = () => ({
   mobile: "",
 });
 
-function createEmptyForm(): Omit<CustomerRecord, "id" | "createdAt"> {
+export function createEmptyCustomerForm(): Omit<CustomerRecord, "id" | "createdAt"> {
   return {
     customerType: "individual",
     salutation: "",
@@ -123,6 +123,22 @@ function createEmptyForm(): Omit<CustomerRecord, "id" | "createdAt"> {
     customFieldLabel: "",
     customFieldValue: "",
     remarks: "",
+  };
+}
+
+/** Minimal customer payload for creating a client from a typed display name. */
+export function quickCustomerCreateValues(
+  displayName: string,
+  currency = "INR",
+): Omit<CustomerRecord, "id" | "createdAt"> {
+  const name = displayName.trim();
+  return {
+    ...createEmptyCustomerForm(),
+    customerType: "business",
+    companyName: name,
+    displayName: name,
+    currency,
+    gstTreatment: "unregistered_business",
   };
 }
 
@@ -303,10 +319,10 @@ export function NewCustomerForm({
 }: NewCustomerFormProps) {
   const isEditing = Boolean(initialCustomer);
   const [form, setForm] = useState(() => {
-    if (!initialCustomer) return createEmptyForm();
+    if (!initialCustomer) return createEmptyCustomerForm();
     const { id: _id, createdAt: _createdAt, ...rest } = initialCustomer;
     return {
-      ...createEmptyForm(),
+      ...createEmptyCustomerForm(),
       ...rest,
       gstTreatment: normalizeGstTreatment(
         (rest as { gstTreatment?: unknown }).gstTreatment,

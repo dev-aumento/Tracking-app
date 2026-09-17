@@ -14,6 +14,7 @@ import { Collections } from "@db/mongo/collections";
 import type { InvoiceDoc } from "@db/mongo/types";
 import { orgFilter, requireOrganizationId } from "./lib/tenant";
 import { assertPermission } from "./lib/permissions";
+import { ensurePaymentForPaidInvoice } from "./lib/record-invoice-payment";
 
 const lineItemSchema = z.object({
   id: z.string(),
@@ -44,8 +45,12 @@ const invoiceInputSchema = z.object({
   status: z.enum(["draft", "sent", "paid"]),
 });
 
-const mockInvoices: InvoiceDoc[] = [];
+export const mockInvoices: InvoiceDoc[] = [];
 let mockNextId = 1;
+
+export function nextMockInvoiceId() {
+  return mockNextId++;
+}
 
 function useMock() {
   return isAuthDisabled() || !hasMongoConfigured();
@@ -106,7 +111,7 @@ export const invoiceRouter = createRouter({
 
       if (useMock()) {
         const doc: InvoiceDoc = {
-          id: mockNextId++,
+          id: nextMockInvoiceId(),
           organizationId,
           ...input,
           createdBy: ctx.user.id,
@@ -114,6 +119,7 @@ export const invoiceRouter = createRouter({
           updatedAt: now,
         };
         mockInvoices.unshift(doc);
+        await ensurePaymentForPaidInvoice(doc, ctx.user.id, now);
         return toClient(doc);
       }
 
@@ -125,6 +131,7 @@ export const invoiceRouter = createRouter({
         createdAt: now,
         updatedAt: now,
       });
+      await ensurePaymentForPaidInvoice(doc, ctx.user.id, now);
       return toClient(doc);
     }),
 
@@ -148,6 +155,7 @@ export const invoiceRouter = createRouter({
           ...data,
           updatedAt: now,
         };
+        await ensurePaymentForPaidInvoice(mockInvoices[idx]!, ctx.user.id, now);
         return toClient(mockInvoices[idx]!);
       }
 
@@ -162,6 +170,9 @@ export const invoiceRouter = createRouter({
         updatedAt: now,
       });
       const updated = await findById<InvoiceDoc>(Collections.invoices, id);
+      if (updated) {
+        await ensurePaymentForPaidInvoice(updated, ctx.user.id, now);
+      }
       return toClient(updated!);
     }),
 
@@ -223,14 +234,16 @@ export const invoiceRouter = createRouter({
           );
           if (exists) continue;
           const now = createdAt ? new Date(createdAt) : new Date();
-          mockInvoices.unshift({
-            id: mockNextId++,
+          const doc: InvoiceDoc = {
+            id: nextMockInvoiceId(),
             organizationId,
             ...data,
             createdBy: ctx.user.id,
             createdAt: now,
             updatedAt: now,
-          });
+          };
+          mockInvoices.unshift(doc);
+          await ensurePaymentForPaidInvoice(doc, ctx.user.id, now);
           imported += 1;
         }
         return { imported };
@@ -246,13 +259,14 @@ export const invoiceRouter = createRouter({
         });
         if (exists) continue;
         const now = createdAt ? new Date(createdAt) : new Date();
-        await insertDoc<InvoiceDoc>(Collections.invoices, {
+        const doc = await insertDoc<InvoiceDoc>(Collections.invoices, {
           organizationId,
           ...data,
           createdBy: ctx.user.id,
           createdAt: now,
           updatedAt: now,
         });
+        await ensurePaymentForPaidInvoice(doc, ctx.user.id, now);
         imported += 1;
       }
       return { imported };

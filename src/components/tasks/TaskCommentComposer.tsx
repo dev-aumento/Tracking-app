@@ -19,6 +19,7 @@ import {
   getCaretOffset,
   getPlainText,
   isSelectionInsideList,
+  keepEditorCaretInView,
   type RichTextCommentEditorHandle,
 } from "@/components/tasks/RichTextCommentEditor";
 import {
@@ -127,6 +128,7 @@ export function TaskCommentComposer({
   const mentionRangeRef = useRef<MentionRange | null>(null);
   const wasSendingRef = useRef(false);
   const skipNextDraftWriteRef = useRef(false);
+  const userHeightFloorRef = useRef(EDITOR_HEIGHT_DEFAULT);
   const resizeDragRef = useRef<{
     pointerId: number;
     startY: number;
@@ -186,6 +188,8 @@ export function TaskCommentComposer({
       setRichHtml("");
       setRichMedia([]);
       setPlainText("");
+      setEditorHeight(EDITOR_HEIGHT_DEFAULT);
+      userHeightFloorRef.current = EDITOR_HEIGHT_DEFAULT;
       setEditorResetKey((key) => key + 1);
     }
     wasSendingRef.current = Boolean(isSending);
@@ -301,6 +305,38 @@ export function TaskCommentComposer({
     return Math.min(EDITOR_HEIGHT_MAX, Math.max(EDITOR_HEIGHT_MIN, Math.round(value)));
   }, []);
 
+  const fitEditorToContent = useCallback(() => {
+    if (resizeDragRef.current) return;
+    const editor = editorElement();
+    if (!editor) return;
+
+    const prevScrollTop = editor.scrollTop;
+    const wasPinnedToBottom =
+      editor.scrollHeight - editor.scrollTop - editor.clientHeight <= 8;
+
+    const prevHeight = editor.style.height;
+    const prevMinHeight = editor.style.minHeight;
+    const prevOverflowY = editor.style.overflowY;
+    editor.style.height = "auto";
+    editor.style.minHeight = "0";
+    editor.style.overflowY = "hidden";
+    const needed = Math.ceil(editor.scrollHeight);
+    editor.style.height = prevHeight;
+    editor.style.minHeight = prevMinHeight;
+    editor.style.overflowY = prevOverflowY;
+    editor.scrollTop = prevScrollTop;
+
+    setEditorHeight((current) => {
+      const next = clampEditorHeight(Math.max(needed, userHeightFloorRef.current));
+      return next === current ? current : next;
+    });
+
+    if (wasPinnedToBottom) {
+      editor.scrollTop = editor.scrollHeight;
+    }
+    keepEditorCaretInView(editor);
+  }, [clampEditorHeight]);
+
   const handleResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -318,6 +354,7 @@ export function TaskCommentComposer({
     if (!drag || drag.pointerId !== event.pointerId) return;
     // Dragging upward (smaller clientY) increases the composer height.
     const nextHeight = clampEditorHeight(drag.startHeight + (drag.startY - event.clientY));
+    userHeightFloorRef.current = nextHeight;
     setEditorHeight(nextHeight);
   };
 
@@ -328,6 +365,7 @@ export function TaskCommentComposer({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    requestAnimationFrame(fitEditorToContent);
   };
 
   return (
@@ -409,10 +447,16 @@ export function TaskCommentComposer({
               initialHtml={editorResetKey === 0 ? initialHtml : ""}
               initialMedia={editorResetKey === 0 ? initialMedia : []}
               editorHeight={editorHeight}
+              editorMaxHeight={EDITOR_HEIGHT_MAX}
               onChange={(html, media) => {
                 setRichHtml(html);
                 setRichMedia(media);
                 syncCaret();
+                fitEditorToContent();
+                requestAnimationFrame(() => {
+                  fitEditorToContent();
+                  keepEditorCaretInView(editorElement());
+                });
               }}
               onUploadingChange={setEditorUploading}
               onUploadMedia={onUploadMedia}

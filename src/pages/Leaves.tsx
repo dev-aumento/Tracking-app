@@ -27,6 +27,7 @@ import {
   isWorkFromHomeLeave,
   leaveDayUnits,
   leaveTypeLabel,
+  wfhRequestBlockedMessage,
   type LeaveDuration,
   type LeaveType,
 } from "@/lib/leave-policy";
@@ -274,6 +275,16 @@ export default function Leaves() {
     annualWfhEntitlement(balanceYear, balance?.dateOfJoining ?? null);
   const wfhRemaining =
     balance?.wfhRemaining ?? Math.max(0, wfhTotal - (wfhUsed + (balance?.wfhPending ?? 0)));
+  const wfhBlockedReason = wfhRequestBlockedMessage({
+    onNoticePeriod: balance?.onNoticePeriod,
+    dateOfJoining: balance?.dateOfJoining ?? null,
+    employmentType: balance?.employmentType ?? null,
+  });
+
+  useEffect(() => {
+    if (!wfhBlockedReason || !isWorkFromHomeLeave(leaveType)) return;
+    setLeaveType("paid");
+  }, [wfhBlockedReason, leaveType]);
 
   const cards = useMemo(
     () => [
@@ -303,7 +314,11 @@ export default function Leaves() {
         icon: Home,
         iconColor: "#0D9488",
         badge: { text: "Remaining", bg: "#CCFBF1", color: "#0F766E" },
-        subtext: `${wfhUsed} used · ${balance?.wfhPending ?? 0} pending · of ${wfhTotal} in ${balanceYear}`,
+        subtext: balance?.onNoticePeriod
+          ? `No WFH during notice period · ${wfhUsed} used of ${wfhTotal}`
+          : balance?.inProbation
+          ? `No WFH during ${balance.paidLeaveLockLabel ?? "probation"} · ${wfhUsed} used of ${wfhTotal}`
+          : `${wfhUsed} used · ${balance?.wfhPending ?? 0} pending · of ${wfhTotal} in ${balanceYear}`,
       },
     ],
     [
@@ -341,6 +356,12 @@ export default function Leaves() {
       const message = alreadyAppliedLeaveMessage();
       setError(message);
       toast.error(message);
+      return;
+    }
+
+    if (isWorkFromHomeLeave(leaveType) && wfhBlockedReason) {
+      setError(wfhBlockedReason);
+      toast.error(wfhBlockedReason);
       return;
     }
 
@@ -543,21 +564,29 @@ export default function Leaves() {
                 Leave type
               </label>
               <div className="flex flex-wrap gap-2">
-                {LEAVE_TYPE_OPTIONS.map((opt) => (
+                {LEAVE_TYPE_OPTIONS.map((opt) => {
+                  const wfhLocked =
+                    isWorkFromHomeLeave(opt.value) && Boolean(wfhBlockedReason);
+                  return (
                   <button
                     key={opt.value}
                     type="button"
+                    disabled={wfhLocked}
                     onClick={() => handleLeaveTypeChange(opt.value)}
                     className={`h-9 px-3 rounded-lg text-sm font-medium border transition-colors ${
                       leaveType === opt.value
                         ? "bg-[#2563EB] text-white border-[#2563EB]"
                         : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
-                    }`}
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
                   >
                     {opt.label}
                   </button>
-                ))}
+                  );
+                })}
               </div>
+              {wfhBlockedReason ? (
+                <p className="text-xs text-amber-700 mt-2">{wfhBlockedReason}.</p>
+              ) : null}
 
               <div className="mt-3">
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -615,7 +644,10 @@ export default function Leaves() {
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={applyMutation.isPending}
+              disabled={
+                applyMutation.isPending ||
+                (isWorkFromHomeLeave(leaveType) && Boolean(wfhBlockedReason))
+              }
               className="h-10 px-6 bg-gradient-to-r from-[#2563EB] to-[#3B82F6] text-white rounded-lg text-sm font-semibold hover:shadow-lg hover:shadow-blue-200 transition-all inline-flex items-center gap-2 disabled:opacity-60"
             >
               {applyMutation.isPending ? (
@@ -788,6 +820,7 @@ export default function Leaves() {
           if (!open) setSelectedRequestId(null);
         }}
         onCancelled={() => setSelectedRequestId(null)}
+        wfhBlockedReason={wfhBlockedReason}
       />
     </motion.div>
   );
@@ -798,11 +831,13 @@ function LeaveRequestDetailDialog({
   open,
   onOpenChange,
   onCancelled,
+  wfhBlockedReason,
 }: {
   request: LeaveRequestItem | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCancelled?: () => void;
+  wfhBlockedReason?: string | null;
 }) {
   const utils = trpc.useUtils();
   const todayKey = workZoneDateKey(new Date());
@@ -936,6 +971,11 @@ function LeaveRequestDetailDialog({
       setEditError("Please choose a valid weekday date range.");
       return;
     }
+    if (isWorkFromHomeLeave(leaveType) && wfhBlockedReason) {
+      setEditError(wfhBlockedReason);
+      toast.error(wfhBlockedReason);
+      return;
+    }
     updateMutation.mutate({
       id: request.id,
       leaveType: leaveType as "paid" | "sick" | "unpaid" | "wfh",
@@ -971,18 +1011,23 @@ function LeaveRequestDetailDialog({
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5">Leave type</label>
                 <div className="flex flex-wrap gap-2">
-                  {LEAVE_TYPE_OPTIONS.map((opt) => (
+                  {LEAVE_TYPE_OPTIONS.map((opt) => {
+                    const wfhLocked =
+                      isWorkFromHomeLeave(opt.value) && Boolean(wfhBlockedReason);
+                    return (
                     <button
                       key={opt.value}
                       type="button"
+                      disabled={wfhLocked}
                       onClick={() => {
+                        if (wfhLocked) return;
                         setLeaveType(opt.value);
                         if (isWorkFromHomeLeave(opt.value)) {
                           setDuration("full");
                         }
                       }}
                       className={cn(
-                        "h-8 px-2.5 rounded-lg text-xs font-medium border transition-colors",
+                        "h-8 px-2.5 rounded-lg text-xs font-medium border transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                         leaveType === opt.value
                           ? "border-[#2563EB] bg-blue-50 text-[#2563EB]"
                           : "border-gray-200 text-gray-600 hover:bg-gray-50",
@@ -990,8 +1035,12 @@ function LeaveRequestDetailDialog({
                     >
                       {opt.short}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
+                {wfhBlockedReason ? (
+                  <p className="text-[11px] text-amber-700 mt-1.5">{wfhBlockedReason}.</p>
+                ) : null}
               </div>
 
               <div>
@@ -1115,7 +1164,10 @@ function LeaveRequestDetailDialog({
                 </button>
                 <button
                   type="button"
-                  disabled={updateMutation.isPending}
+                  disabled={
+                    updateMutation.isPending ||
+                    (isWorkFromHomeLeave(leaveType) && Boolean(wfhBlockedReason))
+                  }
                   onClick={handleSaveEdit}
                   className="flex-1 h-10 rounded-lg bg-[#2563EB] text-white text-sm font-semibold hover:bg-[#1D4ED8] disabled:opacity-60 inline-flex items-center justify-center gap-2"
                 >

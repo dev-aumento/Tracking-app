@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { Banknote, ExternalLink, Wallet } from "lucide-react";
 import { trpc } from "@/providers/trpc";
 import { invoiceTotal } from "@/lib/invoice-store";
+import { useFxConvert } from "@/hooks/useFxConvert";
 import { Button } from "@/components/ui/button";
 import {
   FinanceEmptyState,
@@ -44,6 +45,7 @@ function agingLabel(days: number) {
 
 export default function ReceivablePage() {
   const { data: invoices = [], isLoading } = trpc.invoice.list.useQuery();
+  const { toBase } = useFxConvert();
 
   const receivables = useMemo(
     () => invoices.filter((inv) => inv.status === "sent"),
@@ -51,8 +53,8 @@ export default function ReceivablePage() {
   );
 
   const totalAr = useMemo(
-    () => receivables.reduce((sum, inv) => sum + invoiceTotal(inv), 0),
-    [receivables],
+    () => receivables.reduce((sum, inv) => sum + toBase(invoiceTotal(inv), inv.currency), 0),
+    [receivables, toBase],
   );
 
   if (isLoading) return <FinanceLoading />;

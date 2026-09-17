@@ -215,6 +215,14 @@ export async function ensureIndexes() {
       ],
     },
     {
+      name: Collections.vendors,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, name: 1 } },
+        { key: { organizationId: 1, createdAt: -1 } },
+      ],
+    },
+    {
       name: Collections.dashboardReminders,
       indexes: [
         { key: { id: 1 }, unique: true },

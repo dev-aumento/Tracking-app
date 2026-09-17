@@ -37,6 +37,7 @@ export const Collections = {
   expenses: "expenses",
   contracts: "contracts",
   vendorBills: "vendor_bills",
+  vendors: "vendors",
   dashboardReminders: "dashboard_reminders",
 } as const;
 

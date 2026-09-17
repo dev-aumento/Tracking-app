@@ -304,10 +304,10 @@ export default function TimeTracking() {
       {!hidePersonalTime ? (
         <>
       {/* Clock In/Out Hero Card */}
-      <motion.div variants={itemVariants} className="bg-gradient-to-r from-[#2563EB] to-[#3B82F6] rounded-2xl p-6 text-white shadow-lg shadow-blue-200">
+      <motion.div variants={itemVariants} className="portal-slate-gradient rounded-2xl p-6 text-white shadow-md">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div className="min-w-0">
-            <div className="text-blue-100 text-sm font-medium mb-1">
+            <div className="text-white/80 text-sm font-medium mb-1">
               {isClockedIn
                 ? isPaused
                   ? "On Break"
@@ -326,7 +326,7 @@ export default function TimeTracking() {
                 {hasWorkedToday ? "Clock in again" : "Clock in to start tracking"}
               </div>
             )}
-            <div className="text-blue-100 text-xs mt-2">
+            <div className="text-white/75 text-xs mt-2">
               {isClockedIn
                 ? isPaused
                   ? `Work paused at ${formatElapsedHMS(cumulativeWorkSeconds)} · break running`
@@ -376,7 +376,7 @@ export default function TimeTracking() {
                     clockOutAction.requestClockOut(currentSession!.startTime, note || undefined)
                   }
                   disabled={clockInMutation.isPending || clockOutAction.isPending}
-                  className="flex-1 md:flex-none h-11 sm:h-12 px-4 sm:px-6 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all bg-white text-[#2563EB] hover:bg-blue-50 shadow-md disabled:opacity-50"
+                  className="flex-1 md:flex-none h-11 sm:h-12 px-4 sm:px-6 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all bg-white text-[#39586f] hover:bg-white/90 shadow-md disabled:opacity-50"
                 >
                   {clockOutAction.isPending ? (
                     <Loader2 size={18} className="animate-spin" />

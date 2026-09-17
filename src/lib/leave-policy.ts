@@ -352,6 +352,40 @@ export function paidLeaveLockPeriodLabel(
   return "first 3 months of probation";
 }
 
+/**
+ * WFH cannot be requested while serving notice or still inside the
+ * probation / internship lock window used for paid leave.
+ */
+export function isWfhRequestBlocked(
+  params: {
+    onNoticePeriod?: boolean | null;
+    dateOfJoining?: Date | string | null;
+    employmentType?: EmploymentType | string | null;
+  },
+  asOf: Date | string = new Date(),
+): boolean {
+  if (params.onNoticePeriod) return true;
+  return isInProbationPeriod(params.dateOfJoining, asOf, params.employmentType);
+}
+
+/** User-facing reason when {@link isWfhRequestBlocked} is true; otherwise null. */
+export function wfhRequestBlockedMessage(
+  params: {
+    onNoticePeriod?: boolean | null;
+    dateOfJoining?: Date | string | null;
+    employmentType?: EmploymentType | string | null;
+  },
+  asOf: Date | string = new Date(),
+  options?: { forEmployee?: boolean },
+): string | null {
+  if (!isWfhRequestBlocked(params, asOf)) return null;
+  const suffix = options?.forEmployee ? " for this employee" : "";
+  if (params.onNoticePeriod) {
+    return `Work from home cannot be applied during notice period${suffix}`;
+  }
+  return `Work from home cannot be applied during ${paidLeaveLockPeriodLabel(params.employmentType)}${suffix}`;
+}
+
 /** Half-day leave still requires this many hours of work that day. */
 export const HALF_DAY_REQUIRED_WORK_HOURS = 5;
 

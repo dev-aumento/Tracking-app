@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { HandCoins, Pencil, Trash2 } from "lucide-react";
 import { trpc } from "@/providers/trpc";
 import { Button } from "@/components/ui/button";
+import { useFxConvert } from "@/hooks/useFxConvert";
 import {
   Dialog,
   DialogContent,
@@ -85,10 +86,14 @@ export default function PayablePage() {
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState<VendorBillForm>(emptyForm());
   const [error, setError] = useState<string | null>(null);
+  const { toBase } = useFxConvert();
 
   const openTotal = useMemo(
-    () => data.filter((b) => b.status === "open").reduce((sum, b) => sum + b.amount, 0),
-    [data],
+    () =>
+      data
+        .filter((b) => b.status === "open")
+        .reduce((sum, b) => sum + toBase(b.amount, b.currency), 0),
+    [data, toBase],
   );
 
   function openCreate() {

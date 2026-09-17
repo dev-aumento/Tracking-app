@@ -4202,6 +4202,7 @@ import {
   manualLeaveEntryMessage,
   MONTHLY_PAID_LEAVES,
   roundLeaveUnits,
+  wfhRequestBlockedMessage,
   type LeaveType,
 } from "@/lib/leave-policy";
 import { workZoneDateKey, workZoneDateParts } from "@/lib/timezone";
@@ -4342,6 +4343,25 @@ function mockAssertYearScopedBalance(params: {
   }
 }
 
+function mockAssertWfhEligible(
+  userId: number,
+  leaveType: string,
+  options?: { forEmployee?: boolean },
+) {
+  if (!isWorkFromHomeLeave(leaveType)) return;
+  const user = userById(userId);
+  const message = wfhRequestBlockedMessage(
+    {
+      onNoticePeriod: Boolean(user?.onNoticePeriod),
+      dateOfJoining: user?.dateOfJoining ?? null,
+      employmentType: resolveEmploymentType(user),
+    },
+    new Date(),
+    options,
+  );
+  if (message) throw new Error(message);
+}
+
 function mockAssertNoOverlappingLeave(params: {
   userId: number;
   startDate: string;
@@ -4413,6 +4433,7 @@ export function mockApplyLeave(
   if (isWorkFromHomeLeave(input.leaveType) && input.isHalfDay) {
     throw new Error("Work from home is full day only");
   }
+  mockAssertWfhEligible(userId, input.leaveType);
 
   if (isHalfDay && input.startDate !== input.endDate) {
     throw new Error("Half day leave must be for a single day only");
@@ -4524,6 +4545,7 @@ export function mockUpdateMyLeave(
   if (isHalfDay && !allowsHalfDayLeave(input.leaveType)) {
     throw new Error("Half day is not available for this leave type");
   }
+  mockAssertWfhEligible(userId, input.leaveType);
   if (isHalfDay && input.startDate !== input.endDate) {
     throw new Error("Half day leave must be for a single day only");
   }
@@ -4629,6 +4651,7 @@ export function mockCreateManualLeave(
   if (isHalfDay && !allowsHalfDayLeave(input.leaveType)) {
     throw new Error("Half day is not available for this leave type");
   }
+  mockAssertWfhEligible(input.userId, input.leaveType, { forEmployee: true });
   if (isHalfDay && input.startDate !== input.endDate) {
     throw new Error("Half day leave must be for a single day only");
   }

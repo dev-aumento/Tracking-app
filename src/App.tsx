@@ -29,7 +29,6 @@ import AdminAllTasks from './pages/admin/AllTasks'
 import AdminPermissions from './pages/admin/Permissions'
 import AdminInvoices from './pages/admin/Invoices'
 import AdminCustomers from './pages/admin/Customers'
-import BankAccountsPage from './pages/finance/BankAccountsPage'
 import ChartOfAccountsPage from './pages/finance/ChartOfAccountsPage'
 import EstimatesPage from './pages/finance/EstimatesPage'
 import PaymentsPage from './pages/finance/PaymentsPage'
@@ -331,11 +330,6 @@ export default function App() {
           <Route path="/admin/customers/:customerId/edit" element={
             <PermissionRoute path="/admin/customers">
               <AdminCustomers />
-            </PermissionRoute>
-          } />
-          <Route path="/finance/banks" element={
-            <PermissionRoute path="/finance/banks">
-              <BankAccountsPage />
             </PermissionRoute>
           } />
           <Route path="/finance/chart-of-accounts" element={
