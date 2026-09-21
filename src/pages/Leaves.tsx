@@ -57,7 +57,7 @@ import { cn } from "@/lib/utils";
 import { holidayVisualForName } from "@/lib/holiday-icons";
 import { HolidayCalendarDayButton } from "@/components/leaves/HolidayCalendarDayButton";
 import type { CalendarHolidayBadge } from "@/components/leaves/HolidayCalendarDayButton";
-import { HolidayVisualBadge } from "@/components/leaves/HolidayVisualBadge";
+import { PublicHolidayListRow } from "@/components/leaves/PublicHolidayListRow";
 
 type LeaveRequestItem = {
   id: number;
@@ -82,6 +82,7 @@ export default function Leaves() {
       (query.state.data?.requests ?? []).some((r) => r.status === "pending") ? 10_000 : false,
   });
   const holidayYear = workZoneDateParts(new Date()).year;
+  const todayKey = workZoneDateKey(new Date());
   const { data: holidaysData, isLoading: holidaysLoading } = trpc.leave.listHolidays.useQuery({
     year: holidayYear,
   });
@@ -766,48 +767,15 @@ export default function Leaves() {
             </div>
           ) : (
             <div className="divide-y divide-gray-50 border-t border-gray-100">
-              {holidays.map((holiday) => {
-                const isPast = holiday.date < workZoneDateKey(new Date());
-                const isUpcoming = !isPast;
-                const visual = holidayVisualForName(holiday.name, holiday.date);
-                return (
-                  <div
-                    key={holiday.id}
-                    className={cn(
-                      "px-5 py-3 flex flex-wrap items-center justify-between gap-2",
-                      isPast && "opacity-60",
-                    )}
-                  >
-                    <div className="flex items-start gap-2.5 min-w-0">
-                      <HolidayVisualBadge
-                        visual={visual}
-                        className="text-lg mt-0.5 shrink-0"
-                        flagClassName="h-4 w-6 mt-0.5"
-                      />
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium text-gray-800">{holiday.name}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">
-                          {formatWorkZoneDateKey(holiday.date, {
-                            weekday: "short",
-                            month: "long",
-                            day: "numeric",
-                            year: "numeric",
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                    {isUpcoming ? (
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
-                        Upcoming
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
-                        Past
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
+              {holidays.map((holiday) => (
+                <PublicHolidayListRow
+                  key={holiday.id}
+                  date={holiday.date}
+                  name={holiday.name}
+                  todayKey={todayKey}
+                  className="px-5 py-3"
+                />
+              ))}
             </div>
           )
         ) : null}

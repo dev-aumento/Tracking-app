@@ -21,3 +21,12 @@ export function defaultHolidaysForYear(year: number): Array<{ date: string; name
     name: h.name,
   }));
 }
+
+export type HolidayOccurrence = "past" | "today" | "upcoming";
+
+/** Compare YYYY-MM-DD keys in the workspace timezone. */
+export function holidayOccurrence(dateKey: string, todayKey: string): HolidayOccurrence {
+  if (dateKey < todayKey) return "past";
+  if (dateKey === todayKey) return "today";
+  return "upcoming";
+}

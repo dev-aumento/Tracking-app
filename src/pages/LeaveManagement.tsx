@@ -38,9 +38,8 @@ import {
 } from "@/lib/leave-policy";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { UserSearchSelect } from "@/components/tasks/UserSearchSelect";
-import { formatWorkZoneDateKey, formatWorkZoneDateTime, workZoneDateParts } from "@/lib/timezone";
-import { holidayVisualForName } from "@/lib/holiday-icons";
-import { HolidayVisualBadge } from "@/components/leaves/HolidayVisualBadge";
+import { formatWorkZoneDateKey, formatWorkZoneDateTime, workZoneDateKey, workZoneDateParts } from "@/lib/timezone";
+import { PublicHolidayListRow } from "@/components/leaves/PublicHolidayListRow";
 import {
   approvedLeaveDateKeysForUser,
   LeaveDatePickerField,
@@ -164,6 +163,7 @@ export default function LeaveManagement() {
     requests: LeaveRequestRow[];
   } | null>(null);
   const currentYear = workZoneDateParts(new Date()).year;
+  const todayKey = workZoneDateKey(new Date());
   const [usageYear, setUsageYear] = useState(currentYear);
   const [employeeSearch, setEmployeeSearch] = useState("");
   const [holidayYear, setHolidayYear] = useState(currentYear);
@@ -1823,31 +1823,14 @@ export default function LeaveManagement() {
               </p>
             ) : (
               <div className="divide-y divide-gray-100 border border-gray-100 rounded-lg overflow-hidden">
-                {holidays.map((holiday) => {
-                  const visual = holidayVisualForName(holiday.name, holiday.date);
-                  return (
-                    <div
-                      key={holiday.id}
-                      className="flex items-center justify-between gap-3 px-4 py-3 bg-white"
-                    >
-                      <div className="flex items-start gap-2.5 min-w-0">
-                        <HolidayVisualBadge
-                          visual={visual}
-                          className="text-lg mt-0.5 shrink-0"
-                          flagClassName="h-4 w-6 mt-0.5"
-                        />
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-gray-800">{holiday.name}</div>
-                          <div className="text-xs text-gray-500 mt-0.5">
-                            {formatWorkZoneDateKey(holiday.date, {
-                              weekday: "short",
-                              month: "long",
-                              day: "numeric",
-                              year: "numeric",
-                            })}
-                          </div>
-                        </div>
-                      </div>
+                {holidays.map((holiday) => (
+                  <PublicHolidayListRow
+                    key={holiday.id}
+                    date={holiday.date}
+                    name={holiday.name}
+                    todayKey={todayKey}
+                    className="px-4 py-3"
+                    actions={
                       <button
                         type="button"
                         title="Remove holiday"
@@ -1858,9 +1841,9 @@ export default function LeaveManagement() {
                       >
                         <Trash2 size={15} />
                       </button>
-                    </div>
-                  );
-                })}
+                    }
+                  />
+                ))}
               </div>
             )}
           </div>
