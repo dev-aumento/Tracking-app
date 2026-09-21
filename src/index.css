@@ -376,12 +376,8 @@ html.dark textarea::placeholder {
 /* Light mode: translucent slate gradient composited over white */
 .sidebar-chrome,
 .portal-slate-gradient {
-  background-color: #ffffff;
-  background-image: linear-gradient(
-    to bottom,
-    rgb(57 88 111 / 50%),
-    rgb(103 125 147 / 90%)
-  );
+  background-color: #677d93e5;
+  background-image: linear-gradient(to bottom,#677d937f,#677d93e5);
 }
 
 /* Dark mode: previous charcoal sidebar (no light-mode gradient) */
