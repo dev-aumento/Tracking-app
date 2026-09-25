@@ -2,6 +2,16 @@ import { TRPCError } from "@trpc/server";
 import type { SafeUser } from "../queries/users";
 import { isAdminOrManagement } from "@/lib/leave-policy";
 
+export const TIME_APPROVAL_REVIEWER_ROLES = ["admin", "hr", "manager"] as const;
+
+/** Super admin, HR admin, and project manager may review manual time entries. */
+export function canReviewTimeApprovals(
+  user: { role?: string | null } | null | undefined,
+): boolean {
+  const role = String(user?.role ?? "").toLowerCase();
+  return (TIME_APPROVAL_REVIEWER_ROLES as readonly string[]).includes(role);
+}
+
 export function hasPermission(
   user: Pick<SafeUser, "role" | "permissions" | "department">,
   permission: string,

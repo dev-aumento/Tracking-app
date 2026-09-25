@@ -5,7 +5,7 @@ import { UserAvatar } from "@/components/shared/UserAvatar";
 import { Timer, Calendar, Loader2, Pencil, ChevronDown, Coffee } from "lucide-react";
 import { localDateKey, REQUIRED_DAILY_HOURS, formatHoursMinutes, formatHoursMinutesFloored } from "@/lib/work-hours-policy";
 import { formatDuration, cn } from "@/lib/utils";
-import { hasPermission } from "@/lib/permissions";
+import { canReviewTimeApprovals, hasPermission } from "@/lib/permissions";
 import { isAdminOrManagement } from "@/lib/leave-policy";
 import { BreaksPanel } from "@/components/time-tracking/BreaksPanel";
 import {
@@ -245,10 +245,14 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
                 ? "No attendance logged for this employee on the selected date."
                 : "No attendance logged for you on the selected date."
             }
-            onEditEntry={(entry) => {
-              setEditingEntry(entry);
-              setEditOpen(true);
-            }}
+            onEditEntry={
+              !viewingOtherEmployee || canReviewTimeApprovals(user)
+                ? (entry) => {
+                    setEditingEntry(entry);
+                    setEditOpen(true);
+                  }
+                : undefined
+            }
           />
           <BreaksPanel date={selectedDate} userId={breaksUserId} />
           <EditAttendanceEntryDialog

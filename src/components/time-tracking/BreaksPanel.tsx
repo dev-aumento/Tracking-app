@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
+import { canReviewTimeApprovals } from "@/lib/permissions";
 import { formatDuration } from "@/lib/utils";
 import { formatHoursMinutes } from "@/lib/work-hours-policy";
 import { formatWorkZoneTime } from "@/lib/timezone";
@@ -299,8 +300,8 @@ export function BreaksPanel({
   const breaks = data?.breaks ?? [];
   const hasActiveBreak = breaks.some((b) => !b.endTime);
 
-  const canAddBreak =
-    !userId || userId === user?.id || user?.role === "admin";
+  const canManageBreak =
+    !userId || userId === user?.id || canReviewTimeApprovals(user);
 
   useEffect(() => {
     if (!hasActiveBreak) return;
@@ -342,7 +343,7 @@ export function BreaksPanel({
             </span>
           ) : null}
         </div>
-        {canAddBreak ? (
+        {canManageBreak ? (
           <button
             type="button"
             onClick={() => {
@@ -357,7 +358,7 @@ export function BreaksPanel({
         ) : null}
       </div>
 
-      {adding && canAddBreak ? (
+      {adding && canManageBreak ? (
         <AddBreakForm
           date={date}
           userId={userId}
@@ -369,7 +370,7 @@ export function BreaksPanel({
       {breaks.length === 0 && !adding ? (
         <div className="px-5 py-8 text-center text-sm text-gray-400">
           No breaks recorded for this day.
-          {canAddBreak ? " Use Add break if you forgot to start one." : null}
+          {canManageBreak ? " Use Add break if you forgot to start one." : null}
         </div>
       ) : null}
 
@@ -395,19 +396,21 @@ export function BreaksPanel({
                       ) : null}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAdding(false);
-                      setEditingId(isEditing ? null : breakItem.id);
-                    }}
-                    className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 flex items-center gap-1 shrink-0"
-                  >
-                    {isEditing ? <X size={14} /> : <Pencil size={14} />}
-                    {isEditing ? "Close" : "Edit"}
-                  </button>
+                  {canManageBreak ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdding(false);
+                        setEditingId(isEditing ? null : breakItem.id);
+                      }}
+                      className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 flex items-center gap-1 shrink-0"
+                    >
+                      {isEditing ? <X size={14} /> : <Pencil size={14} />}
+                      {isEditing ? "Close" : "Edit"}
+                    </button>
+                  ) : null}
                 </div>
-                {isEditing ? (
+                {isEditing && canManageBreak ? (
                   <BreakEditForm
                     breakItem={breakItem}
                     onCancel={() => setEditingId(null)}

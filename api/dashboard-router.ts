@@ -28,7 +28,7 @@ import {
   REQUIRED_DAILY_HOURS,
   startOfCalendarWeek,
 } from "@/lib/work-hours-policy";
-import { leaveTypeShort, isHrRoleOnly, eachLeaveDateKey, isWeekdayDateKey, isWorkFromHomeLeave, isAdminOrManagement, isFinanceRoleOnly } from "@/lib/leave-policy";
+import { leaveTypeShort, isHrRoleOnly, eachLeaveDateKey, isWeekdayDateKey, isWorkFromHomeLeave, isHalfDayLeave, isAdminOrManagement, isFinanceRoleOnly } from "@/lib/leave-policy";
 import { isCountedInWorkforce } from "./queries/employees";
 import {
   HR_OVERVIEW_DEPARTMENT_LABELS,
@@ -261,6 +261,7 @@ type UpcomingLeaveSummaryItem = {
   avatar: string | null;
   leaveType: string;
   leaveTypeLabel: string;
+  isHalfDay: boolean;
 };
 
 async function buildLeaveSummary(
@@ -325,6 +326,7 @@ async function buildLeaveSummary(
         avatar: user?.avatar ?? null,
         leaveType: leaveTypeShort(l.leaveType),
         leaveTypeLabel: leaveTypeSummaryLabel(l.leaveType),
+        isHalfDay: isHalfDayLeave(l),
       };
 
       if (isWfh) {

@@ -34,6 +34,7 @@ import {
 } from "@/lib/work-hours-policy";
 import { formatWorkZoneDateKey, formatWorkZoneTime } from "@/lib/timezone";
 import { isAdminOrManagement } from "@/lib/leave-policy";
+import { canReviewTimeApprovals } from "@/lib/permissions";
 import {
   Play, Square, Timer, Clock, TrendingUp,
   Loader2, Pause, AlertCircle,
@@ -93,9 +94,8 @@ export default function TimeTracking() {
   const { user } = useAuth();
   const [period, setPeriod] = useState<"week" | "month">("week");
   const [note, setNote] = useState("");
-  const isAdmin = user?.role === "admin";
-  const isHR = user?.role === "hr";
   const hidePersonalTime = isAdminOrManagement(user);
+  const canReviewApprovals = canReviewTimeApprovals(user);
 
   const { data: currentSession } = trpc.timeEntry.getCurrentSession.useQuery(undefined, {
     enabled: !hidePersonalTime,
@@ -593,7 +593,7 @@ export default function TimeTracking() {
         </motion.div>
       )}
 
-      {isAdmin || isHR ? (
+      {canReviewApprovals ? (
         <motion.div variants={itemVariants}>
           <TimeApprovalPanel />
         </motion.div>

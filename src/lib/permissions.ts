@@ -22,6 +22,14 @@ export function hasPermission(user: PermissionUser | null | undefined, permissio
   return user.permissions?.includes(permission) ?? false;
 }
 
+/** Super admin, HR admin, and project manager may review manual time entries. */
+export function canReviewTimeApprovals(
+  user: { role?: string | null } | null | undefined,
+): boolean {
+  const role = String(user?.role ?? "").toLowerCase();
+  return role === "admin" || role === "hr" || role === "manager";
+}
+
 export function hasAnyPermission(
   user: PermissionUser | null | undefined,
   permissions: string[],

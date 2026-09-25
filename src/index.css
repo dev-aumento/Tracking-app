@@ -410,6 +410,13 @@ html.dark .sidebar-chrome .text-\[\#39586f\] {
 }
 
 @layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #e5e7eb transparent;
+  }
+  html.dark .scrollbar-thin {
+    scrollbar-color: #3b4a63 transparent;
+  }
   .scrollbar-thin::-webkit-scrollbar {
     width: 6px;
   }

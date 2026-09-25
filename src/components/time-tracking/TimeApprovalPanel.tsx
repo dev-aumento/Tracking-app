@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { trpc } from "@/providers/trpc";
+import { useAuth } from "@/hooks/useAuth";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { formatTimeAgo } from "@/lib/utils";
 import { formatWorkZoneDateTime } from "@/lib/timezone";
+import { canReviewTimeApprovals } from "@/lib/permissions";
 import { Check, Loader2, X } from "lucide-react";
 
 function formatApprovalTime(value: Date | string | null | undefined) {
@@ -15,10 +17,13 @@ function formatApprovalTime(value: Date | string | null | undefined) {
 }
 
 export function TimeApprovalPanel() {
+  const { user } = useAuth();
   const utils = trpc.useUtils();
   const [reviewNote, setReviewNote] = useState<Record<number, string>>({});
+  const canReview = canReviewTimeApprovals(user);
   const { data, isLoading } = trpc.timeEntry.listPendingApprovals.useQuery(undefined, {
-    refetchInterval: 30000,
+    enabled: canReview,
+    refetchInterval: canReview ? 30000 : false,
   });
 
   const reviewMutation = trpc.timeEntry.reviewTimeApproval.useMutation({

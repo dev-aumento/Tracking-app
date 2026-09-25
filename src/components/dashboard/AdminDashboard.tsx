@@ -24,6 +24,7 @@ import { formatMoney } from "@/lib/invoice-store";
 import { WorkforceKpiCards } from "@/components/dashboard/WorkforceKpiCards";
 import { DashboardCalendarEventsBlocks } from "@/components/dashboard/DashboardCalendarPanel";
 import { UpcomingBirthdaysPanel, TodayBirthdaysBanner } from "@/components/dashboard/UpcomingBirthdaysPanel";
+import { LeaveSummaryPanel } from "@/components/dashboard/LeaveSummaryPanel";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { useEffect } from "react";
 
@@ -370,6 +371,14 @@ export function AdminDashboard() {
               ))}
             </motion.div>
           ) : null}
+
+          <motion.div variants={itemVariants}>
+            <LeaveSummaryPanel
+              leaveMonthLabel={data?.leaveMonthLabel}
+              upcomingLeaves={data?.upcomingLeaves ?? []}
+              upcomingWfh={data?.upcomingWfh ?? []}
+            />
+          </motion.div>
 
           <motion.div
             variants={itemVariants}

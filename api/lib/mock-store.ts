@@ -16,6 +16,7 @@ import { extractMentionedUserIdsFromComment, richCommentPlainText } from "@/lib/
 import { readCommentReactions, toggleUserReaction } from "@/lib/comment-reactions";
 import { formatWorkZoneTime, startOfWorkZoneDay, workZoneWallTimeToUtc } from "@/lib/timezone";
 import { defaultTaskDeadlineIso } from "@/lib/task-deadline";
+import { canReviewTimeApprovals } from "./permissions";
 import {
   buildDaySnapshotsFromEntries,
   calendarMonthBounds,
@@ -723,7 +724,10 @@ const timeApprovalRequests: MockTimeApprovalRequest[] = [];
 
 function mockNotifyAdmins(actor: SafeUser, title: string, message: string, approvalRequestId: number) {
   const recipients = users.filter(
-    (u) => (u.role === "admin" || u.role === "hr") && u.id !== actor.id && u.status === "active",
+    (u) =>
+      (u.role === "admin" || u.role === "hr" || u.role === "manager") &&
+      u.id !== actor.id &&
+      u.status === "active",
   );
   for (const recipient of recipients) {
     notifications.unshift({
@@ -3411,8 +3415,8 @@ export function mockCreateBreak(
   },
 ) {
   const targetUserId =
-    input.userId && actor.role === "admin" ? input.userId : actor.id;
-  if (input.userId && input.userId !== actor.id && actor.role !== "admin") {
+    input.userId && canReviewTimeApprovals(actor) ? input.userId : actor.id;
+  if (input.userId && input.userId !== actor.id && !canReviewTimeApprovals(actor)) {
     throw new Error("Not allowed to add a break for this user");
   }
 
@@ -3525,7 +3529,7 @@ export function mockUpdateBreak(
 ) {
   const list = workBreaksByUser[actor.id] ?? [];
   const existing = list.find((b) => b.id === input.id);
-  if (!existing && actor.role === "admin") {
+  if (!existing && canReviewTimeApprovals(actor)) {
     for (const breaks of Object.values(workBreaksByUser)) {
       const found = breaks.find((b) => b.id === input.id);
       if (found) {
@@ -3534,7 +3538,7 @@ export function mockUpdateBreak(
     }
   }
   if (!existing) throw new Error("Break not found");
-  if (existing.userId !== actor.id && actor.role !== "admin") {
+  if (existing.userId !== actor.id && !canReviewTimeApprovals(actor)) {
     throw new Error("Not allowed to edit this break");
   }
   return mockUpdateBreakForBreak(actor, existing, input);
@@ -3631,7 +3635,7 @@ export function mockUpdateAttendanceEntry(
     (e) => e.id === input.id && e.taskId == null,
   );
   if (!entry) throw new Error("Attendance entry not found");
-  if (entry.userId !== actor.id && actor.role !== "admin") {
+  if (entry.userId !== actor.id && !canReviewTimeApprovals(actor)) {
     throw new Error("Not allowed to edit this attendance entry");
   }
   if (!entry.clockOut) {
@@ -4025,6 +4029,8 @@ export function mockHrDashboard() {
                 : l.leaveType === "wfh"
                   ? "Work from home"
                   : "Half day",
+        isHalfDay:
+          Boolean(l.isHalfDay) || l.leaveType === "half" || Number(l.days) === 0.5,
       };
       if (isWfh) {
         upcomingWfhItems.push(item);

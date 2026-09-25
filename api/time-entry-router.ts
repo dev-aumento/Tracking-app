@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createRouter, authedQuery, managerQuery, adminOrHrQuery } from "./middleware";
+import { createRouter, authedQuery, managerQuery, timeApprovalReviewerQuery } from "./middleware";
 import { isAuthDisabled } from "./lib/dev-mode";
-import { assertPermission, hasPermission } from "./lib/permissions";
+import { assertPermission, canReviewTimeApprovals, hasPermission, TIME_APPROVAL_REVIEWER_ROLES } from "./lib/permissions";
 import * as mock from "./lib/mock-store";
 import {
   buildTimeStatsSummary,
@@ -697,7 +697,7 @@ export const timeEntryRouter = createRouter({
       const breakCol = await getCollection<WorkBreakDoc>(Collections.workBreaks);
       const existing = await breakCol.findOne({ id: input.id });
       if (!existing) throw new Error("Break not found");
-      if (existing.userId !== ctx.user.id && ctx.user.role !== "admin") {
+      if (existing.userId !== ctx.user.id && !canReviewTimeApprovals(ctx.user)) {
         throw new Error("Not allowed to edit this break");
       }
 
@@ -801,8 +801,8 @@ export const timeEntryRouter = createRouter({
 
       await ensureSchema();
       const targetUserId =
-        input.userId && ctx.user.role === "admin" ? input.userId : ctx.user.id;
-      if (input.userId && input.userId !== ctx.user.id && ctx.user.role !== "admin") {
+        input.userId && canReviewTimeApprovals(ctx.user) ? input.userId : ctx.user.id;
+      if (input.userId && input.userId !== ctx.user.id && !canReviewTimeApprovals(ctx.user)) {
         throw new Error("Not allowed to add a break for this user");
       }
 
@@ -892,7 +892,7 @@ export const timeEntryRouter = createRouter({
       const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
       const existing = await timeCol.findOne({ id: input.id, taskId: null });
       if (!existing) throw new Error("Attendance entry not found");
-      if (existing.userId !== ctx.user.id && ctx.user.role !== "admin") {
+      if (existing.userId !== ctx.user.id && !canReviewTimeApprovals(ctx.user)) {
         throw new Error("Not allowed to edit this attendance entry");
       }
       if (!existing.clockOut) {
@@ -1025,13 +1025,13 @@ export const timeEntryRouter = createRouter({
         title: "Manual clock-in needs approval",
         message: `${actorName} requests clock-in at ${requestedLabel} instead of ${actualLabel}: ${input.reason.trim()}`,
         approvalRequestId: request.id,
-        roles: ["admin", "hr"],
+        roles: [...TIME_APPROVAL_REVIEWER_ROLES],
       });
 
       return { ...request, requiresApproval: true };
     }),
 
-  listPendingApprovals: adminOrHrQuery.query(async ({ ctx }) => {
+  listPendingApprovals: timeApprovalReviewerQuery.query(async ({ ctx }) => {
     if (isAuthDisabled() || !hasMongoConfigured()) {
       return mock.mockListPendingApprovals();
     }
@@ -1060,7 +1060,7 @@ export const timeEntryRouter = createRouter({
     };
   }),
 
-  reviewTimeApproval: adminOrHrQuery
+  reviewTimeApproval: timeApprovalReviewerQuery
     .input(
       z.object({
         id: z.number(),
