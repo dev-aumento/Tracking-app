@@ -79,7 +79,7 @@ function TeamHourWorkBreak({
   clockOut?: Date | string | null;
 }) {
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 rounded-lg border border-gray-200 bg-white p-3">
+    <div className="grid grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-white p-3 sm:grid-cols-4">
       <div className="flex items-center gap-2.5">
         <div className="h-8 w-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
           <LogIn size={15} />
@@ -102,7 +102,7 @@ function TeamHourWorkBreak({
             Clock out
           </div>
           <div className="text-sm font-semibold text-[#1F2937]">
-            {clockIn && !clockOut ? "In progress" : formatClockTime(clockOut)}
+            {formatClockTime(clockOut)}
           </div>
         </div>
       </div>

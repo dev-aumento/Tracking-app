@@ -224,6 +224,54 @@ function displayAttendanceDurationSeconds(
   return null;
 }
 
+/** Earliest clock-in and latest clock-out for the day. Open attendance leaves clock-out empty. */
+async function resolveDayClockTimes(
+  userId: number,
+  start: Date,
+  end: Date,
+  entries: TimeEntryDoc[],
+  attendanceStillOpen: boolean,
+) {
+  const sorted = [...entries].sort(
+    (a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime(),
+  );
+  let clockIn: Date | null = sorted[0] ? new Date(sorted[0].clockIn) : null;
+  let clockOut: Date | null = null;
+  let stillOpen = attendanceStillOpen;
+
+  if (!stillOpen) {
+    for (const entry of sorted) {
+      if (!entry.clockOut) continue;
+      const ended = new Date(entry.clockOut);
+      if (!clockOut || ended.getTime() > clockOut.getTime()) clockOut = ended;
+    }
+  }
+
+  if (!clockIn) {
+    const sessionCol = await getCollection<WorkSessionDoc>(Collections.workSessions);
+    const sessions = await sessionCol
+      .find({
+        userId,
+        startTime: { $gte: start, $lte: end },
+      })
+      .sort({ startTime: 1 })
+      .toArray();
+    if (sessions.length > 0) {
+      clockIn = new Date(sessions[0].startTime);
+      stillOpen = sessions.some((session) => session.active || !session.endTime);
+      if (!stillOpen) {
+        for (const session of sessions) {
+          if (!session.endTime) continue;
+          const ended = new Date(session.endTime);
+          if (!clockOut || ended.getTime() > clockOut.getTime()) clockOut = ended;
+        }
+      }
+    }
+  }
+
+  return { clockIn, clockOut: stillOpen ? null : clockOut };
+}
+
 async function buildDayHoursForUser(userId: number, dateStr: string, now = new Date()) {
   const { start, end } = dayBounds(dateStr);
   const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
@@ -278,22 +326,17 @@ async function buildDayHoursForUser(userId: number, dateStr: string, now = new D
     0,
   );
   const breakSeconds = sumBreakSecondsInWindow(dayBreaks, start, end, now);
-  const sortedEntries = [...enrichedEntries].sort(
-    (a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime(),
+  const { clockIn, clockOut } = await resolveDayClockTimes(
+    userId,
+    start,
+    end,
+    entries,
+    Boolean(primaryOpen),
   );
-  const stillOpen = sortedEntries.some((entry) => !entry.clockOut);
-  const clockOut = stillOpen
-    ? null
-    : sortedEntries.reduce<Date | null>((latest, entry) => {
-        if (!entry.clockOut) return latest;
-        const ended = new Date(entry.clockOut);
-        if (!latest || ended.getTime() > latest.getTime()) return ended;
-        return latest;
-      }, null);
 
   return {
     entries: enrichedEntries,
-    clockIn: sortedEntries[0]?.clockIn ?? null,
+    clockIn,
     clockOut,
     totalMinutes: totalSeconds / 60,
     totalSeconds,
