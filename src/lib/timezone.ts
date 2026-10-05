@@ -32,6 +32,36 @@ export function workZoneDateKey(date: Date | string): string {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+/** Parse a `YYYY-MM-DD` date. Returns null when the value is not a calendar date. */
+export function parseIsoDateOnly(
+  value: string | null | undefined,
+): { year: number; month: number; day: number } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return { year, month, day };
+}
+
+/** Store a calendar date at 12:00 UTC so the day does not shift across time zones. */
+export function calendarYmdToUtcNoon(parts: {
+  year: number;
+  month: number;
+  day: number;
+}): Date {
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 12, 0, 0, 0));
+}
+
 /** Convert an IST wall-clock time to a UTC Date instant. */
 export function workZoneWallTimeToUtc(
   year: number,

@@ -104,3 +104,18 @@ export function departmentSelectScopeForRole(
   }
   return "employee";
 }
+
+/** True when this person's role or department is in the invoice exclusion list. */
+export function staffTimerMatchesExcludedRoles(
+  user: { role?: string | null; department?: string | null } | null | undefined,
+  excluded: string[],
+): boolean {
+  if (!user || excluded.length === 0) return false;
+  const role = String(user.role ?? "").trim().toLowerCase();
+  const department = String(user.department ?? "").trim().toLowerCase();
+  return excluded.some((value) => {
+    const needle = value.trim().toLowerCase();
+    if (!needle) return false;
+    return needle === role || needle === department;
+  });
+}

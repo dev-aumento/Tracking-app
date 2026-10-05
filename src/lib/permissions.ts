@@ -14,6 +14,16 @@ import {
 
 export type AppRole = "admin" | "manager" | "employee" | "hr" | "client" | "finance" | "platform";
 
+const TIME_APPROVAL_REVIEWER_ROLES = ["admin", "hr", "manager"] as const;
+
+/** Super admin, HR admin, and project manager may review manual time entries. */
+export function canReviewTimeApprovals(
+  user: { role?: string | null } | null | undefined,
+): boolean {
+  const role = String(user?.role ?? "").toLowerCase();
+  return (TIME_APPROVAL_REVIEWER_ROLES as readonly string[]).includes(role);
+}
+
 type PermissionUser = {
   role: AppRole;
   permissions?: string[];

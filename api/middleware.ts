@@ -130,6 +130,8 @@ function requireEmployeesDirectoryAccess() {
 export const authedQuery = t.procedure.use(requireAuth);
 export const adminQuery = authedQuery.use(requireRole("admin"));
 export const timeApprovalReviewerQuery = authedQuery.use(requireTimeApprovalReviewer());
+/** Admin, HR, and project managers review manual time approvals. */
+export const adminOrHrQuery = timeApprovalReviewerQuery;
 export const managerQuery = authedQuery.use(requireManagerOrAbove());
 export const employeesManageQuery = authedQuery.use(requireEmployeesManage());
 export const employeesDirectoryQuery = authedQuery.use(requireEmployeesDirectoryAccess());

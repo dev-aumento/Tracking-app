@@ -364,12 +364,23 @@ export function wfhRequestBlockedMessage(
 ): string | null {
   const who = options?.forEmployee ? " for this employee" : "";
   if (user.onNoticePeriod) {
-    return `No WFH${who} during notice period`;
+    return `Work from home cannot be applied during notice period${who}`;
   }
   if (isInProbationPeriod(user.dateOfJoining, asOf, user.employmentType)) {
-    return `No WFH${who} during ${paidLeaveLockPeriodLabel(user.employmentType)}`;
+    return `Work from home cannot be applied during ${paidLeaveLockPeriodLabel(user.employmentType)}`;
   }
   return null;
+}
+
+export function isWfhRequestBlocked(
+  user: {
+    onNoticePeriod?: boolean | null;
+    dateOfJoining?: Date | string | null;
+    employmentType?: EmploymentType | string | null;
+  },
+  asOf: Date | string = new Date(),
+): boolean {
+  return wfhRequestBlockedMessage(user, asOf) != null;
 }
 
 /** Half-day leave still requires this many hours of work that day. */

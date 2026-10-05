@@ -724,7 +724,9 @@ export const dashboardRouter = createRouter({
 
     // Account managers / clients are staff directory users but not workforce headcount.
     const activeUsers = activeUsersRaw.filter((u) => isCountedInWorkforce(u));
-    const employeeByUserId = new Map(employeeRows.map((e) => [e.userId, e]));
+    const employeeByUserId = new Map<number, BirthdayEmployee>(
+      (employeeRows as BirthdayEmployee[]).map((employee) => [employee.userId, employee]),
+    );
     const orgUserIds = new Set(activeUsers.map((u) => u.id));
     const totalEmployees = activeUsers.length;
 

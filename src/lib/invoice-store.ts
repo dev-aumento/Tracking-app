@@ -28,6 +28,31 @@ export const INVOICE_CURRENCIES = [
 
 export type InvoiceCurrencyCode = (typeof INVOICE_CURRENCIES)[number]["code"];
 
+const CURRENCY_CODES = new Set<string>(INVOICE_CURRENCIES.map((item) => item.code));
+
+export function normalizeCurrencyCode(currency?: string | null): InvoiceCurrencyCode {
+  const code = String(currency ?? "").trim().toUpperCase();
+  if (CURRENCY_CODES.has(code)) return code as InvoiceCurrencyCode;
+  return "INR";
+}
+
+/** Seconds of a time entry that fall inside [rangeStart, rangeEnd). Open entries run until `now`. */
+export function timeEntrySecondsInRange(
+  entry: { clockIn?: Date | string | null; clockOut?: Date | string | null },
+  rangeStart: Date,
+  rangeEnd: Date,
+  now: Date = new Date(),
+): number {
+  if (!entry.clockIn) return 0;
+  const start = new Date(entry.clockIn).getTime();
+  const end = entry.clockOut ? new Date(entry.clockOut).getTime() : now.getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  const overlapStart = Math.max(start, rangeStart.getTime());
+  const overlapEnd = Math.min(end, rangeEnd.getTime());
+  if (overlapEnd <= overlapStart) return 0;
+  return Math.floor((overlapEnd - overlapStart) / 1000);
+}
+
 export type InvoiceRecord = {
   id: number;
   invoiceNumber: string;

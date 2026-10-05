@@ -1,4 +1,6 @@
 export type UserRole = "admin" | "manager" | "employee" | "hr" | "client" | "finance";
+export type SubscriptionPlan = "trial" | "free" | "starter" | "growth" | "business" | "enterprise";
+export type SubscriptionStatus = "trial" | "paid" | "unpaid" | "cancelled";
 export type UserStatus = "active" | "inactive" | "suspended" | "Active" | "Inactive" | "Suspended";
 export type EmploymentType = "full_time" | "intern";
 export type SexOption = "male" | "female" | "other" | "prefer_not_to_say";
