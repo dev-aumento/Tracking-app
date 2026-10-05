@@ -352,25 +352,9 @@ export function paidLeaveLockPeriodLabel(
   return "first 3 months of probation";
 }
 
-/**
- * WFH cannot be requested while serving notice or still inside the
- * probation / internship lock window used for paid leave.
- */
-export function isWfhRequestBlocked(
-  params: {
-    onNoticePeriod?: boolean | null;
-    dateOfJoining?: Date | string | null;
-    employmentType?: EmploymentType | string | null;
-  },
-  asOf: Date | string = new Date(),
-): boolean {
-  if (params.onNoticePeriod) return true;
-  return isInProbationPeriod(params.dateOfJoining, asOf, params.employmentType);
-}
-
-/** User-facing reason when {@link isWfhRequestBlocked} is true; otherwise null. */
+/** Why a WFH request is blocked, or null when the employee may request WFH. */
 export function wfhRequestBlockedMessage(
-  params: {
+  user: {
     onNoticePeriod?: boolean | null;
     dateOfJoining?: Date | string | null;
     employmentType?: EmploymentType | string | null;
@@ -378,12 +362,14 @@ export function wfhRequestBlockedMessage(
   asOf: Date | string = new Date(),
   options?: { forEmployee?: boolean },
 ): string | null {
-  if (!isWfhRequestBlocked(params, asOf)) return null;
-  const suffix = options?.forEmployee ? " for this employee" : "";
-  if (params.onNoticePeriod) {
-    return `Work from home cannot be applied during notice period${suffix}`;
+  const who = options?.forEmployee ? " for this employee" : "";
+  if (user.onNoticePeriod) {
+    return `No WFH${who} during notice period`;
   }
-  return `Work from home cannot be applied during ${paidLeaveLockPeriodLabel(params.employmentType)}${suffix}`;
+  if (isInProbationPeriod(user.dateOfJoining, asOf, user.employmentType)) {
+    return `No WFH${who} during ${paidLeaveLockPeriodLabel(user.employmentType)}`;
+  }
+  return null;
 }
 
 /** Half-day leave still requires this many hours of work that day. */
@@ -992,11 +978,33 @@ export function buildLeaveCoverageMap(
 }
 
 export function canManageLeaves(
-  user: { role?: string | null; department?: string | null } | null | undefined,
+  user: {
+    role?: string | null;
+    department?: string | null;
+    permissions?: string[] | null;
+  } | null | undefined,
 ): boolean {
   if (!user) return false;
   if (String(user.role ?? "").toLowerCase() === "admin") return true;
-  return isHrUser(user);
+  if (isHrUser(user)) return true;
+  return user.permissions?.includes("leaves.manage") === true;
+}
+
+/**
+ * Attendance, office locations, and attendance QR codes.
+ * Admin, HR, or anyone granted `attendance.manage`.
+ */
+export function canManageAttendance(
+  user: {
+    role?: string | null;
+    department?: string | null;
+    permissions?: string[] | null;
+  } | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (String(user.role ?? "").toLowerCase() === "admin") return true;
+  if (isHrUser(user)) return true;
+  return user.permissions?.includes("attendance.manage") === true;
 }
 
 /**
@@ -1028,6 +1036,7 @@ export function isAdminOrManagement(
   user: { role?: string | null; department?: string | null } | null | undefined,
 ): boolean {
   if (!user) return false;
+  if (String(user.role ?? "").toLowerCase() === "platform") return false;
   if (String(user.role ?? "").toLowerCase() === "admin") return true;
   const department = (user.department ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   return (
@@ -1035,6 +1044,28 @@ export function isAdminOrManagement(
     department === "administration" ||
     department === "administrator"
   );
+}
+
+/**
+ * People listed on the Attendance management page: employees, HR, and project managers.
+ * Excludes admins, clients, finance, and platform accounts.
+ */
+export function isAttendanceTrackableUser(
+  user: { role?: string | null; department?: string | null } | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (isAdminOrManagement(user)) return false;
+  if (isFinanceUser(user)) return false;
+  const role = String(user.role ?? "").toLowerCase();
+  if (
+    role === "admin" ||
+    role === "client" ||
+    role === "finance" ||
+    role === "platform"
+  ) {
+    return false;
+  }
+  return role === "employee" || role === "hr" || role === "manager" || isHrUser(user);
 }
 
 /**
@@ -1067,11 +1098,15 @@ export function isHrRoleOnly(
 export function isHrRestrictedPath(path: string): boolean {
   if (path === "/tasks" || path.startsWith("/tasks/")) return true;
   if (path === "/admin/tasks" || path.startsWith("/admin/tasks/")) return true;
+  if (path === "/admin/client-tasks" || path.startsWith("/admin/client-tasks")) return true;
   if (path === "/projects" || path.startsWith("/projects/")) return true;
   if (path === "/task-chats" || path.startsWith("/task-chats/")) return true;
   if (path === "/admin/permissions" || path.startsWith("/admin/permissions/")) return true;
+  if (path === "/admin/manage-data" || path.startsWith("/admin/manage-data")) return true;
+  if (path === "/admin/pricing" || path.startsWith("/admin/pricing")) return true;
   if (path === "/admin/invoices" || path.startsWith("/admin/invoices/")) return true;
   if (path === "/admin/customers" || path.startsWith("/admin/customers/")) return true;
+  if (path === "/admin/reports" || path.startsWith("/admin/reports/")) return true;
   return false;
 }
 
@@ -1099,16 +1134,30 @@ export function isFinanceRoleOnly(
   return String(user?.role ?? "").toLowerCase() === "finance";
 }
 
+/** People who can be assigned tasks. HR and finance do not take task work. */
+export function isTaskAssignableUser(
+  user: { role?: string | null; department?: string | null } | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (isHrUser(user) || isFinanceUser(user)) return false;
+  const role = String(user.role ?? "").toLowerCase();
+  return role !== "platform";
+}
+
 /** Office / ops routes finance managers must not open. */
 export function isFinanceRestrictedPath(path: string): boolean {
   if (path === "/tasks" || path.startsWith("/tasks/")) return true;
   if (path === "/admin/tasks" || path.startsWith("/admin/tasks/")) return true;
+  if (path === "/admin/client-tasks" || path.startsWith("/admin/client-tasks")) return true;
   if (path === "/projects" || path.startsWith("/projects/")) return true;
   if (path === "/task-chats" || path.startsWith("/task-chats/")) return true;
   if (path === "/time-tracking" || path.startsWith("/time-tracking")) return true;
   if (path === "/analytics" || path.startsWith("/analytics")) return true;
   if (path === "/admin/employees" || path.startsWith("/admin/employees")) return true;
+  if (path === "/admin/departments" || path.startsWith("/admin/departments")) return true;
   if (path === "/admin/permissions" || path.startsWith("/admin/permissions")) return true;
+  if (path === "/admin/manage-data" || path.startsWith("/admin/manage-data")) return true;
+  if (path === "/admin/pricing" || path.startsWith("/admin/pricing")) return true;
   if (path === "/leaves" || path.startsWith("/leaves")) return true;
   if (path === "/leave-management" || path.startsWith("/leave-management")) return true;
   if (path === "/attendance-management" || path.startsWith("/attendance-management")) return true;
