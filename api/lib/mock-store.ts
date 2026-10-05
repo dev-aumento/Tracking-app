@@ -1,22 +1,32 @@
 import { DEV_USER } from "./dev-mode";
+import { noticePeriodEndsAt } from "@/lib/notice-period";
+import type { UserDoc } from "@db/mongo/types";
 import {
   countCompletedTasks,
   countTodoTasks,
 } from "./dashboard-task-stats";
 import type { SafeUser } from "../queries/users";
 import { buildTimeStatsSummary, localDateKey, startOfCalendarWeek, periodClockInBounds, dayBounds, roundHours, attendanceEntrySeconds, getAutoClockOutDeadline, isPastAutoClockOutDeadline, computeAttendanceWorkSeconds, resolveAttendanceDisplaySeconds, filterMeaningfulAttendanceEntries, sumBreakSecondsInWindow } from "@/lib/work-hours-policy";
-import { buildLeaveCoverageMap, eachLeaveDateKey, isAdminOrManagement, isWeekdayDateKey } from "@/lib/leave-policy";
+import { buildLeaveCoverageMap, eachLeaveDateKey, isAdminOrManagement, isAttendanceTrackableUser, isWeekdayDateKey } from "@/lib/leave-policy";
 import {
   projectPerformancePercent,
 } from "@/lib/project-funnel";
 import { legacyStatusToStage, createPipelineStageKey, nextCustomStageColor, resolveProjectPipelineStages, isPipelineStageDeletable, isCustomPipelineStageKey, movePipelineStageOrder, isMarkingTaskComplete } from "@/lib/task-kanban";
 import { taskMatchesUnifiedSearch } from "@/lib/unified-search";
+import { extractTaskTags } from "@/lib/task-tags";
 import { extractMentionedUserIds, formatCommentPreview } from "@/lib/task-comment-mentions";
 import { extractMentionedUserIdsFromComment, richCommentPlainText } from "@/lib/rich-comment";
 import { readCommentReactions, toggleUserReaction } from "@/lib/comment-reactions";
-import { formatWorkZoneTime, startOfWorkZoneDay, workZoneWallTimeToUtc } from "@/lib/timezone";
+import { formatWorkZoneTime, startOfWorkZoneDay, workZoneWallTimeToUtc, calendarYmdToUtcNoon, parseIsoDateOnly } from "@/lib/timezone";
 import { defaultTaskDeadlineIso } from "@/lib/task-deadline";
-import { canReviewTimeApprovals } from "./permissions";
+import { personalizeNotificationCopy } from "@/lib/viewer-second-person";
+import { staffTimerMatchesExcludedRoles } from "@/lib/department-options";
+import { normalizeCurrencyCode, timeEntrySecondsInRange, type InvoiceCurrencyCode } from "@/lib/invoice-store";
+import {
+  assignedTaskStatusCountRows,
+  mergeTaskStatusLabels,
+  type TaskStatusLabels,
+} from "@/lib/task-status-labels";
 import {
   buildDaySnapshotsFromEntries,
   calendarMonthBounds,
@@ -39,6 +49,42 @@ function atDayTime(daysBack: number, hours: number, minutes: number) {
   const d = daysAgo(daysBack);
   d.setHours(hours, minutes, 0, 0);
   return d;
+}
+
+let mockOrgBaseCurrency: InvoiceCurrencyCode = "INR";
+
+export function mockGetOrgCurrency() {
+  return mockOrgBaseCurrency;
+}
+
+export function mockSetOrgCurrency(currency?: string | null) {
+  mockOrgBaseCurrency = normalizeCurrencyCode(currency);
+}
+
+let mockTaskStatusLabels: Partial<TaskStatusLabels> | null = null;
+
+export function mockGetTaskStatusLabels() {
+  return mockTaskStatusLabels;
+}
+
+export function mockSetTaskStatusLabels(labels?: Partial<TaskStatusLabels> | null) {
+  mockTaskStatusLabels = labels ? { ...labels } : null;
+}
+
+let mockPipelineStageLabelOverrides: Record<string, string> | null = null;
+
+export function mockGetPipelineStageLabels() {
+  return mockPipelineStageLabelOverrides;
+}
+
+export function mockSetPipelineStageLabels(labels?: Record<string, string> | null) {
+  mockPipelineStageLabelOverrides = labels ? { ...labels } : null;
+}
+
+function resolveMockPipelineStages(
+  project?: Parameters<typeof resolveProjectPipelineStages>[0],
+) {
+  return resolveProjectPipelineStages(project, mockGetPipelineStageLabels());
 }
 
 const users: SafeUser[] = [
@@ -115,6 +161,125 @@ const users: SafeUser[] = [
 
 function userById(id: number) {
   return users.find((u) => u.id === id) ?? null;
+}
+
+const passwordHashByUserId = new Map<number, string>();
+let memoryOrganizationName = "Aaso";
+
+function nextUserId() {
+  return users.reduce((max, user) => Math.max(max, user.id), 0) + 1;
+}
+
+function splitRegisteredName(fullName: string) {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: null as string | null, lastName: null as string | null };
+  if (parts.length === 1) return { firstName: parts[0], lastName: null as string | null };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+export function mockGetOrganizationName() {
+  return memoryOrganizationName;
+}
+
+export function mockSetOrganizationName(name: string) {
+  const trimmed = name.trim();
+  if (trimmed) memoryOrganizationName = trimmed;
+  return memoryOrganizationName;
+}
+
+export function mockFindUserById(id: number): UserDoc | null {
+  const user = userById(id);
+  if (!user) return null;
+  return {
+    ...user,
+    passwordHash: passwordHashByUserId.get(id) ?? null,
+    privateNotes: privateNotesByUserId[id] ?? null,
+  };
+}
+
+export function mockFindUsersByEmail(email: string): UserDoc[] {
+  const normalized = email.trim().toLowerCase();
+  return users
+    .filter((entry) => entry.email?.toLowerCase() === normalized)
+    .map((entry) => mockFindUserById(entry.id))
+    .filter((entry): entry is UserDoc => entry != null);
+}
+
+export function mockFindUserByEmail(email: string): UserDoc | null {
+  return mockFindUsersByEmail(email)[0] ?? null;
+}
+
+export function mockHasUserWithRole(role: UserDoc["role"]) {
+  return users.some((entry) => entry.role === role);
+}
+
+export function mockUpdateLastSignIn(userId: number) {
+  const user = userById(userId);
+  if (!user) return;
+  user.lastSignInAt = new Date();
+  user.updatedAt = new Date();
+}
+
+export function mockSetPasswordHash(userId: number, passwordHash: string) {
+  const user = userById(userId);
+  if (!user) return false;
+  passwordHashByUserId.set(userId, passwordHash);
+  user.updatedAt = new Date();
+  return true;
+}
+
+export function mockCreateRegisteredUser(input: {
+  name: string;
+  email: string;
+  passwordHash: string;
+  role: SafeUser["role"];
+  organizationName: string;
+  department: string | null;
+  position: string | null;
+  permissions: string[];
+}): UserDoc {
+  mockSetOrganizationName(input.organizationName);
+  const now = new Date();
+  const id = nextUserId();
+  const { firstName, lastName } = splitRegisteredName(input.name);
+  const user: SafeUser = {
+    id,
+    unionId: `${input.role}_${id}`,
+    organizationId: 1,
+    name: input.name.trim(),
+    email: input.email,
+    avatar: null,
+    role: input.role,
+    status: "active",
+    department: input.department,
+    position: input.position,
+    phone: null,
+    firstName,
+    lastName,
+    secondName: null,
+    dateOfBirth: null,
+    dateOfJoining: now,
+    sex: null,
+    city: null,
+    address: null,
+    familyContactNumber: null,
+    personalEmail: null,
+    bloodGroup: null,
+    aadhaarCard: null,
+    panCard: null,
+    notificationLanguage: "en",
+    employmentType: "full_time",
+    onNoticePeriod: false,
+    headOfDepartmentUserIds: [],
+    permissions: [...input.permissions],
+    sortOrder: id,
+    createdAt: now,
+    updatedAt: now,
+    lastSignInAt: now,
+  };
+  users.push(user);
+  passwordHashByUserId.set(id, input.passwordHash);
+  return mockFindUserById(id)!;
 }
 
 /** Owner-only notes kept separate from SafeUser so admin APIs never see them. */
@@ -381,7 +546,7 @@ const notifications = [
     userId: 1,
     taskId: 1,
     type: "task_assigned" as const,
-    title: "New task assigned",
+    title: "Assigned to you",
     message: "Sarah Chen assigned you to Design homepage hero section",
     read: false,
     link: "/tasks?task=1",
@@ -507,14 +672,67 @@ export function mockWorkload() {
   });
 }
 
+/** All tasks on a project for invoice auto-fill (no membership gate). */
+export function mockInvoiceProjectTaskLines(projectId: number) {
+  return [...tasks]
+    .filter((t) => t.projectId === projectId)
+    .sort((a, b) => (a.position - b.position) || (a.id - b.id))
+    .map((t) => ({
+      id: t.id,
+      title: t.title,
+      actualHours: t.actualHours,
+      estimatedHours: t.estimatedHours,
+    }));
+}
+
+/** Completed time entries plus any still-running / paused timer on the task. */
+export function mockInvoiceTrackedSeconds(
+  taskId: number,
+  range?: { start: Date; end: Date } | null,
+  excludeDepartments?: string[] | null,
+) {
+  const now = new Date();
+  const excluded = excludeDepartments ?? [];
+  let seconds = 0;
+  for (const entry of taskTimeEntries[taskId] ?? []) {
+    if (staffTimerMatchesExcludedRoles(entry.user, excluded)) continue;
+    if (range) {
+      seconds += timeEntrySecondsInRange(entry, range.start, range.end, now);
+    } else {
+      const durationSeconds =
+        entry.clockIn && entry.clockOut
+          ? Math.max(0, Math.floor((entry.clockOut.getTime() - entry.clockIn.getTime()) / 1000))
+          : (entry.duration ?? 0) * 60;
+      seconds += durationSeconds;
+    }
+  }
+  for (const active of Object.values(activeTaskTimers)) {
+    if (active.taskId !== taskId) continue;
+    if (staffTimerMatchesExcludedRoles(userById(active.userId), excluded)) continue;
+    if (range) {
+      seconds += timeEntrySecondsInRange(
+        { clockIn: active.clockIn, clockOut: null },
+        range.start,
+        range.end,
+        now,
+      );
+    } else {
+      seconds += timerElapsedSeconds(active);
+    }
+  }
+  return seconds;
+}
+
 export function mockTaskList(
   input?: {
     status?: string;
     priority?: string;
     assigneeId?: number;
-    projectId?: number;
+    projectId?: number | null;
     search?: string;
+    page?: number;
     limit?: number;
+    clientAssignedToStaff?: boolean;
   },
   currentUser?: SafeUser,
 ) {
@@ -522,6 +740,38 @@ export function mockTaskList(
   if (input?.status) result = result.filter((t) => t.status === input.status);
   if (input?.priority) result = result.filter((t) => t.priority === input.priority);
   if (input?.assigneeId) result = result.filter((t) => t.assigneeId === input.assigneeId);
+  if (input?.clientAssignedToStaff) {
+    const clientIds = new Set(
+      users.filter((u) => String(u.role).toLowerCase() === "client").map((u) => u.id),
+    );
+    const staffIds = new Set(
+      users.filter((u) => u.role !== "client" && u.role !== "platform").map((u) => u.id),
+    );
+    const originatedByClient = new Set<number>();
+    for (const list of Object.values(taskActivities)) {
+      for (const activity of list) {
+        if (
+          activity.action === "created" &&
+          activity.userId != null &&
+          clientIds.has(activity.userId)
+        ) {
+          originatedByClient.add(activity.taskId);
+        }
+      }
+    }
+    result = result.filter(
+      (t) =>
+        (t.assigneeId == null || staffIds.has(t.assigneeId) || clientIds.has(t.assigneeId)) &&
+        ((t.createdBy != null && clientIds.has(t.createdBy)) || originatedByClient.has(t.id)),
+    );
+  } else if (
+    currentUser?.role === "client" &&
+    !(currentUser.permissions ?? []).includes("tasks.view_all")
+  ) {
+    result = result.filter(
+      (t) => t.createdBy === currentUser.id || t.assigneeId === currentUser.id,
+    );
+  }
   if (input?.projectId) {
     const project = projects.find((p) => p.id === input.projectId);
     const user = currentUser ?? DEV_USER;
@@ -544,6 +794,7 @@ export function mockTaskList(
   return {
     tasks: result.slice(0, limit).map((t) => {
       const project = t.projectId ? projects.find((p) => p.id === t.projectId) : null;
+      const subs = taskSubtasks[t.id] ?? [];
       return {
         ...t,
         creator: t.createdBy ? userById(t.createdBy) ?? null : null,
@@ -552,6 +803,9 @@ export function mockTaskList(
           : null,
         participantIds: (taskParticipants[t.id] ?? []).map((p) => p.id),
         observerIds: (taskObservers[t.id] ?? []).map((p) => p.id),
+        tags: extractTaskTags(t).length ? extractTaskTags(t) : (MOCK_TASK_TAGS[t.id] ?? []),
+        subtaskCount: subs.length,
+        completedSubtaskCount: subs.filter((s) => s.completed).length,
       };
     }),
     total: result.length,
@@ -568,6 +822,13 @@ const taskObservers: Record<number, SafeUser[]> = {
   5: [DEV_USER],
 };
 
+const MOCK_TASK_TAGS: Record<number, string[]> = {
+  1: ["Design", "Shopify"],
+  2: ["QA", "Auth"],
+  3: ["Docs"],
+  4: ["DevOps"],
+};
+
 const taskSubtasks: Record<number, Array<{
   id: number;
   taskId: number;
@@ -579,6 +840,16 @@ const taskSubtasks: Record<number, Array<{
   1: [
     { id: 1, taskId: 1, title: "Research competitors", completed: true, position: 0, createdAt: daysAgo(8) },
     { id: 2, taskId: 1, title: "Create mockups", completed: false, position: 1, createdAt: daysAgo(5) },
+    { id: 8, taskId: 1, title: "Review with PM", completed: false, position: 2, createdAt: daysAgo(2) },
+  ],
+  2: [
+    { id: 3, taskId: 2, title: "Login screen", completed: true, position: 0, createdAt: daysAgo(10) },
+    { id: 4, taskId: 2, title: "Session handling", completed: true, position: 1, createdAt: daysAgo(8) },
+    { id: 5, taskId: 2, title: "QA pass", completed: false, position: 2, createdAt: daysAgo(2) },
+  ],
+  3: [
+    { id: 6, taskId: 3, title: "REST endpoints", completed: false, position: 0, createdAt: daysAgo(4) },
+    { id: 7, taskId: 3, title: "tRPC endpoints", completed: false, position: 1, createdAt: daysAgo(4) },
   ],
 };
 
@@ -724,10 +995,7 @@ const timeApprovalRequests: MockTimeApprovalRequest[] = [];
 
 function mockNotifyAdmins(actor: SafeUser, title: string, message: string, approvalRequestId: number) {
   const recipients = users.filter(
-    (u) =>
-      (u.role === "admin" || u.role === "hr" || u.role === "manager") &&
-      u.id !== actor.id &&
-      u.status === "active",
+    (u) => (u.role === "admin" || u.role === "hr") && u.id !== actor.id && u.status === "active",
   );
   for (const recipient of recipients) {
     notifications.unshift({
@@ -759,6 +1027,7 @@ function mockNotifyTaskMembers({
   extraRecipientIds = [],
   excludeUserIds = [],
   includeAssignee = true,
+  includeOwner = true,
   includeHrRecipients = false,
 }: {
   taskId: number;
@@ -770,11 +1039,13 @@ function mockNotifyTaskMembers({
   extraRecipientIds?: number[];
   excludeUserIds?: number[];
   includeAssignee?: boolean;
+  includeOwner?: boolean;
   includeHrRecipients?: boolean;
 }) {
   const task = tasks.find((t) => t.id === taskId);
   const excluded = new Set([actor.id, ...excludeUserIds].map(Number));
   const recipientIds = new Set<number>();
+  if (includeOwner && task?.createdBy != null) recipientIds.add(task.createdBy);
   if (includeAssignee && task?.assigneeId != null) recipientIds.add(task.assigneeId);
   for (const id of extraRecipientIds) recipientIds.add(Number(id));
 
@@ -1009,7 +1280,7 @@ export function mockTaskById(id: number) {
           pipelineStageLabelOverrides: project.pipelineStageLabelOverrides ?? {},
         }
       : null,
-    pipelineStages: resolveProjectPipelineStages(project),
+    pipelineStages: resolveMockPipelineStages(project),
     creator: userById(task.createdBy ?? 1),
     subtasks: [...(taskSubtasks[id] ?? [])],
     attachments: [...(taskAttachments[id] ?? [])]
@@ -1520,18 +1791,19 @@ export function mockAddTaskComment(taskId: number, message: string, actor: SafeU
       activityId: activity.id,
       extraRecipientIds: mentionedUserIds,
       includeAssignee: false,
+      includeOwner: false,
       includeHrRecipients: true,
     });
-  } else {
-    mockNotifyTaskMembers({
-      taskId,
-      actor,
-      type: "mention",
-      title: "New comment on task",
-      message: `${mockActorLabel(actor)}: ${preview}`,
-      activityId: activity.id,
-    });
   }
+  mockNotifyTaskMembers({
+    taskId,
+    actor,
+    type: "mention",
+    title: "New comment on task",
+    message: `${mockActorLabel(actor)}: ${preview}`,
+    activityId: activity.id,
+    excludeUserIds: mentionedUserIds,
+  });
 
   return activity;
 }
@@ -1579,6 +1851,7 @@ export function mockEditTaskComment(
       activityId: activity.id,
       extraRecipientIds: newlyMentioned,
       includeAssignee: false,
+      includeOwner: false,
       includeHrRecipients: true,
     });
   }
@@ -1692,6 +1965,27 @@ export function mockCreateSubtask(taskId: number, title: string, actor: SafeUser
   return subtask;
 }
 
+export function mockToggleSubtask(id: number) {
+  for (const list of Object.values(taskSubtasks)) {
+    const item = list.find((entry) => entry.id === id);
+    if (!item) continue;
+    item.completed = !item.completed;
+    return item;
+  }
+  throw new Error("Checklist item not found");
+}
+
+export function mockDeleteSubtask(id: number) {
+  for (const [taskId, list] of Object.entries(taskSubtasks)) {
+    const index = list.findIndex((entry) => entry.id === id);
+    if (index < 0) continue;
+    list.splice(index, 1);
+    taskSubtasks[Number(taskId)] = list;
+    return { success: true as const };
+  }
+  throw new Error("Checklist item not found");
+}
+
 export function mockCreateTask(
   input: {
     title: string;
@@ -1719,7 +2013,12 @@ export function mockCreateTask(
     priority: (input.priority ?? "medium") as "low" | "medium" | "high" | "urgent",
     assigneeId: input.assigneeId,
     projectId: input.projectId ?? undefined,
-    createdBy: input.createdBy != null ? Number(input.createdBy) : actor.id,
+    createdBy:
+      String(actor.role ?? "").toLowerCase() === "client"
+        ? actor.id
+        : input.createdBy != null
+          ? Number(input.createdBy)
+          : actor.id,
     dueDate: input.dueDate ? new Date(input.dueDate) : new Date(defaultTaskDeadlineIso()),
     estimatedHours: input.estimatedHours != null ? String(input.estimatedHours) : null,
     actualHours: "0.00",
@@ -1751,8 +2050,11 @@ export function mockCreateTask(
       taskId: id,
       actor,
       type: "task_assigned",
-      title: "New task assigned",
-      message: `${mockActorLabel(actor)} created "${input.title}" and assigned it to you`,
+      title: "Assigned to you",
+      message: `${mockActorLabel(actor)} assigned "${input.title}" to you`,
+      extraRecipientIds: [input.assigneeId],
+      includeAssignee: false,
+      includeOwner: false,
     });
   }
 
@@ -1999,8 +2301,20 @@ export function mockUpdateTask(
         taskId: id,
         actor,
         type: "task_assigned",
+        title: "Assigned to you",
+        message: `${label} assigned "${taskTitle}" to you`,
+        extraRecipientIds: [newAssigneeId],
+        includeAssignee: false,
+        includeOwner: false,
+      });
+      mockNotifyTaskMembers({
+        taskId: id,
+        actor,
+        type: "task_updated",
         title: "Task reassigned",
         message: `${label} assigned "${taskTitle}" to ${newAssignee?.name ?? newAssignee?.email ?? "someone"}`,
+        includeAssignee: false,
+        excludeUserIds: [newAssigneeId],
       });
     } else {
       mockNotifyTaskMembers({
@@ -2089,6 +2403,7 @@ export function mockAddParticipant(taskId: number, userId: number, actor: SafeUs
       message: `${mockActorLabel(actor)} added you as a participant on "${task?.title ?? "a task"}"`,
       extraRecipientIds: [userId],
       includeAssignee: false,
+      includeOwner: false,
     });
   }
   return { success: true };
@@ -2139,6 +2454,7 @@ export function mockAddObserver(
       message: `${mockActorLabel(actor)} added you as an observer on "${task.title}"`,
       extraRecipientIds: [userId],
       includeAssignee: false,
+      includeOwner: false,
     });
   }
   return { success: true };
@@ -2184,6 +2500,12 @@ export function mockProjectList(
       const creator = userById(p.createdBy);
       if (creator) memberMap.set(p.createdBy, creator);
     }
+    for (const key of projectMemberKeys) {
+      const [pid, uid] = key.split(":").map(Number);
+      if (pid !== p.id || uid == null) continue;
+      const joined = userById(uid);
+      if (joined) memberMap.set(uid, joined);
+    }
 
     const lastTaskUpdate = projectTasks.reduce<Date | null>((max, t) => {
       const d = new Date(t.updatedAt);
@@ -2211,11 +2533,18 @@ export function mockProjectList(
         : null,
       performance: projectPerformancePercent(taskCount, completedCount),
       lastActiveAt: lastActiveAt.toISOString(),
-      members: [...memberMap.values()].slice(0, 6).map((u) => ({
-        id: u.id,
-        name: u.name,
-        avatar: u.avatar,
-      })),
+      members: [...memberMap.values()]
+        .map((u) => ({
+          id: u.id,
+          name: u.name,
+          avatar: u.avatar,
+          department: u.department ?? null,
+          position: u.position ?? null,
+          role: u.role ?? null,
+        }))
+        .sort((a, b) =>
+          (a.name ?? "").localeCompare(b.name ?? "", undefined, { sensitivity: "base" }),
+        ),
       privacyType: "Public" as const,
     };
   });
@@ -2263,7 +2592,7 @@ export function mockProjectById(id: number, currentUserId = DEV_USER.id) {
       {},
     hiddenPipelineStageKeys:
       (project as { hiddenPipelineStageKeys?: string[] }).hiddenPipelineStageKeys ?? [],
-    pipelineStages: resolveProjectPipelineStages(
+    pipelineStages: resolveMockPipelineStages(
       project as {
         customPipelineStages?: Array<{ key: string; label: string; color: string }> | null;
         pipelineStageLabelOverrides?: Record<string, string> | null;
@@ -2351,7 +2680,7 @@ export function mockAddPipelineStage(
   if (!project) throw new Error("Project not found");
 
   const custom = [...(project.customPipelineStages ?? [])];
-  const existing = resolveProjectPipelineStages(project);
+  const existing = resolveMockPipelineStages(project);
   const key = createPipelineStageKey(
     label,
     existing.map((s) => s.key),
@@ -2369,7 +2698,7 @@ export function mockAddPipelineStage(
   return {
     project,
     stage,
-    stages: resolveProjectPipelineStages(project),
+    stages: resolveMockPipelineStages(project),
     customPipelineStages: custom,
     pipelineStageOrder: project.pipelineStageOrder,
   };
@@ -2388,7 +2717,7 @@ export function mockRenamePipelineStage(
     | undefined;
   if (!project) throw new Error("Project not found");
 
-  const stages = resolveProjectPipelineStages(project);
+  const stages = resolveMockPipelineStages(project);
   if (!stages.some((s) => s.key === key)) {
     throw new Error("Section not found on this project");
   }
@@ -2406,7 +2735,7 @@ export function mockRenamePipelineStage(
     project,
     key,
     label: nextLabel,
-    stages: resolveProjectPipelineStages(project),
+    stages: resolveMockPipelineStages(project),
     pipelineStageLabelOverrides: overrides,
   };
 }
@@ -2426,7 +2755,7 @@ export function mockDeletePipelineStage(projectId: number, key: string) {
     throw new Error("To Do and Finished sections cannot be deleted");
   }
 
-  const stages = resolveProjectPipelineStages(project);
+  const stages = resolveMockPipelineStages(project);
   if (!stages.some((s) => s.key === key)) {
     throw new Error("Section not found on this project");
   }
@@ -2463,7 +2792,7 @@ export function mockDeletePipelineStage(projectId: number, key: string) {
     project,
     key,
     movedTaskCount,
-    stages: resolveProjectPipelineStages(project),
+    stages: resolveMockPipelineStages(project),
     customPipelineStages: project.customPipelineStages ?? [],
     pipelineStageLabelOverrides: overrides,
     hiddenPipelineStageKeys: project.hiddenPipelineStageKeys ?? [],
@@ -2483,7 +2812,7 @@ export function mockReorderPipelineStage(
     | undefined;
   if (!project) throw new Error("Project not found");
 
-  const stages = resolveProjectPipelineStages(project);
+  const stages = resolveMockPipelineStages(project);
   if (!stages.some((s) => s.key === key)) {
     throw new Error("Section not found on this project");
   }
@@ -2510,7 +2839,7 @@ export function mockReorderPipelineStage(
     project,
     key,
     direction,
-    stages: resolveProjectPipelineStages(project),
+    stages: resolveMockPipelineStages(project),
     pipelineStageOrder,
   };
 }
@@ -2552,10 +2881,16 @@ export function mockLatestNotificationId(userId: number) {
   return Math.max(...userNotifs.map((n) => n.id));
 }
 
-export function mockNotificationsSince(userId: number, sinceId: number) {
+export function mockNotificationsSince(
+  userId: number,
+  sinceId: number,
+  viewer?: { id?: number | null; name?: string | null; email?: string | null } | null,
+) {
+  const identity = viewer ?? users.find((u) => u.id === userId) ?? { id: userId };
   return notifications
     .filter((n) => n.userId === userId && n.id > sinceId)
-    .sort((a, b) => a.id - b.id);
+    .sort((a, b) => a.id - b.id)
+    .map((n) => personalizeNotificationCopy(n, identity));
 }
 
 export function mockMarkAllNotificationsRead(userId: number) {
@@ -2589,7 +2924,21 @@ export function mockDeleteNotification(userId: number, id: number) {
   return { success: true };
 }
 
+function expireMockNoticePeriods() {
+  const now = new Date();
+  for (const user of users) {
+    if (!user.onNoticePeriod || !user.noticePeriodEndsAt) continue;
+    if (user.noticePeriodEndsAt.getTime() > now.getTime()) continue;
+    user.onNoticePeriod = false;
+    user.noticePeriodDays = null;
+    user.noticePeriodEndsAt = null;
+    user.status = "inactive";
+    user.updatedAt = now;
+  }
+}
+
 export function mockUserList() {
+  expireMockNoticePeriods();
   const sorted = [...users].sort((a, b) => {
     const aOrder = a.sortOrder ?? a.id;
     const bOrder = b.sortOrder ?? b.id;
@@ -2619,6 +2968,9 @@ export function mockAdminUpdateUser(input: {
   position?: string | null;
   phone?: string | null;
   permissions?: string[];
+  clientCanViewTimeTracking?: boolean;
+  clientCanViewDueDate?: boolean;
+  assignedEmployeeIds?: number[];
 }) {
   const user = userById(input.id);
   if (!user) return null;
@@ -2629,7 +2981,22 @@ export function mockAdminUpdateUser(input: {
   if (input.department !== undefined) user.department = input.department;
   if (input.position !== undefined) user.position = input.position;
   if (input.phone !== undefined) user.phone = input.phone;
-  if (input.permissions !== undefined) user.permissions = input.permissions;
+  if (input.permissions !== undefined) {
+    const role = input.role ?? user.role;
+    user.permissions =
+      String(role).toLowerCase() === "client"
+        ? input.permissions.filter((key) => key !== "invoices.manage")
+        : input.permissions;
+  }
+  if (input.clientCanViewTimeTracking !== undefined) {
+    user.clientCanViewTimeTracking = input.clientCanViewTimeTracking;
+  }
+  if (input.clientCanViewDueDate !== undefined) {
+    user.clientCanViewDueDate = input.clientCanViewDueDate;
+  }
+  if (input.assignedEmployeeIds !== undefined) {
+    user.assignedEmployeeIds = input.assignedEmployeeIds;
+  }
   user.updatedAt = new Date();
   return { ...user };
 }
@@ -2680,6 +3047,8 @@ export type PersonalInfoUpdateInput = {
   headOfDepartmentUserIds?: number[];
   privateNotes?: string | null;
   employmentType?: "full_time" | "intern";
+  onNoticePeriod?: boolean;
+  noticePeriodDays?: number | null;
 };
 
 function mockPersonalRecord(
@@ -2711,6 +3080,8 @@ function mockPersonalRecord(
     notificationLanguage: user.notificationLanguage ?? "en",
     employmentType: user.employmentType === "intern" ? "intern" : "full_time",
     onNoticePeriod: Boolean(user.onNoticePeriod),
+    noticePeriodDays: user.noticePeriodDays ?? null,
+    noticePeriodEndsAt: user.noticePeriodEndsAt ?? null,
     headOfDepartmentUserIds: headIds,
     headsOfDepartment: headIds
       .map((id) => userById(id))
@@ -2726,6 +3097,7 @@ export function mockGetPersonalInfo(
   userId: number,
   options?: { includePrivateNotes?: boolean },
 ) {
+  expireMockNoticePeriods();
   const user = userById(userId);
   if (!user) throw new Error("User not found");
   return mockPersonalRecord(user, options);
@@ -2765,16 +3137,34 @@ export function mockUpdatePersonalInfo(
     user.employmentType = data.employmentType;
   }
   if (data.onNoticePeriod !== undefined) {
-    user.onNoticePeriod = data.onNoticePeriod;
+    const wasOnNotice = Boolean(user.onNoticePeriod);
+    const previousDays = user.noticePeriodDays ?? null;
+    if (data.onNoticePeriod) {
+      const days = data.noticePeriodDays ?? previousDays;
+      if (days == null || days < 1) {
+        throw new Error("Enter how many days this employee must serve on notice.");
+      }
+      user.onNoticePeriod = true;
+      user.noticePeriodDays = days;
+      if (!wasOnNotice || days !== previousDays || !user.noticePeriodEndsAt) {
+        user.noticePeriodEndsAt = noticePeriodEndsAt(days);
+      }
+    } else {
+      user.onNoticePeriod = false;
+      user.noticePeriodDays = null;
+      user.noticePeriodEndsAt = null;
+    }
   }
   if (data.headOfDepartmentUserIds !== undefined) {
     user.headOfDepartmentUserIds = data.headOfDepartmentUserIds;
   }
   if (data.dateOfBirth !== undefined) {
-    user.dateOfBirth = data.dateOfBirth ? new Date(data.dateOfBirth) : null;
+    const parts = data.dateOfBirth ? parseIsoDateOnly(data.dateOfBirth) : null;
+    user.dateOfBirth = parts ? calendarYmdToUtcNoon(parts) : null;
   }
   if (data.dateOfJoining !== undefined) {
-    user.dateOfJoining = data.dateOfJoining ? new Date(data.dateOfJoining) : null;
+    const parts = data.dateOfJoining ? parseIsoDateOnly(data.dateOfJoining) : null;
+    user.dateOfJoining = parts ? calendarYmdToUtcNoon(parts) : null;
   }
   if (options?.includePrivateNotes && data.privateNotes !== undefined) {
     privateNotesByUserId[userId] = data.privateNotes;
@@ -3215,7 +3605,7 @@ export function mockTeamMonthAttendance(
   now = new Date(),
 ) {
   return users
-    .filter((u) => !isAdminOrManagement(u))
+    .filter((u) => isAttendanceTrackableUser(u))
     .map((user) => ({
       userId: user.id,
       name: user.name || "Unknown",
@@ -3304,9 +3694,22 @@ function mockDayEntriesForUser(userId: number, dateStr: string, now = new Date()
   );
   const dayBreaks = mockFindBreaksOverlappingWindow(userId, start, end);
   const breakSeconds = sumBreakSecondsInWindow(dayBreaks, start, end, now);
+  const sortedEntries = [...enrichedEntries].sort(
+    (a, b) => a.clockIn.getTime() - b.clockIn.getTime(),
+  );
+  const stillOpen = sortedEntries.some((entry) => !entry.clockOut);
+  const clockOut = stillOpen
+    ? null
+    : sortedEntries.reduce<Date | null>((latest, entry) => {
+        if (!entry.clockOut) return latest;
+        if (!latest || entry.clockOut.getTime() > latest.getTime()) return entry.clockOut;
+        return latest;
+      }, null);
 
   return {
     entries: enrichedEntries,
+    clockIn: sortedEntries[0]?.clockIn ?? null,
+    clockOut,
     totalMinutes: totalSeconds / 60,
     totalSeconds,
     totalHours: roundHours(totalSeconds / 3600),
@@ -3415,8 +3818,8 @@ export function mockCreateBreak(
   },
 ) {
   const targetUserId =
-    input.userId && canReviewTimeApprovals(actor) ? input.userId : actor.id;
-  if (input.userId && input.userId !== actor.id && !canReviewTimeApprovals(actor)) {
+    input.userId && actor.role === "admin" ? input.userId : actor.id;
+  if (input.userId && input.userId !== actor.id && actor.role !== "admin") {
     throw new Error("Not allowed to add a break for this user");
   }
 
@@ -3529,7 +3932,7 @@ export function mockUpdateBreak(
 ) {
   const list = workBreaksByUser[actor.id] ?? [];
   const existing = list.find((b) => b.id === input.id);
-  if (!existing && canReviewTimeApprovals(actor)) {
+  if (!existing && actor.role === "admin") {
     for (const breaks of Object.values(workBreaksByUser)) {
       const found = breaks.find((b) => b.id === input.id);
       if (found) {
@@ -3538,7 +3941,7 @@ export function mockUpdateBreak(
     }
   }
   if (!existing) throw new Error("Break not found");
-  if (existing.userId !== actor.id && !canReviewTimeApprovals(actor)) {
+  if (existing.userId !== actor.id && actor.role !== "admin") {
     throw new Error("Not allowed to edit this break");
   }
   return mockUpdateBreakForBreak(actor, existing, input);
@@ -3635,7 +4038,7 @@ export function mockUpdateAttendanceEntry(
     (e) => e.id === input.id && e.taskId == null,
   );
   if (!entry) throw new Error("Attendance entry not found");
-  if (entry.userId !== actor.id && !canReviewTimeApprovals(actor)) {
+  if (entry.userId !== actor.id && actor.role !== "admin") {
     throw new Error("Not allowed to edit this attendance entry");
   }
   if (!entry.clockOut) {
@@ -3841,7 +4244,7 @@ export function mockGetDayHours(userId: number, dateStr: string) {
 export function mockTeamHours(input?: { date?: string; startDate?: string; endDate?: string }) {
   const dateStr = input?.date ?? localDateKey(new Date());
   return users
-    .filter((user) => String(user.role ?? "").toLowerCase() !== "admin")
+    .filter((user) => isAttendanceTrackableUser(user))
     .map((user) => {
     const day = mockDayEntriesForUser(user.id, dateStr);
     return {
@@ -3853,6 +4256,8 @@ export function mockTeamHours(input?: { date?: string; startDate?: string; endDa
       breakHours: day.breakHours,
       breakSeconds: day.breakSeconds,
       entriesCount: day.entriesCount,
+      clockIn: day.clockIn ?? null,
+      clockOut: day.clockOut ?? null,
     };
   });
 }
@@ -3883,12 +4288,7 @@ export function mockAssignedTaskStatusCounts() {
       counts[task.status as keyof typeof counts] += 1;
     }
   }
-  return [
-    { name: "To Do", value: counts.todo, status: "todo" as const },
-    { name: "In Progress", value: counts.in_progress, status: "in_progress" as const },
-    { name: "Review", value: counts.review, status: "review" as const },
-    { name: "Done", value: counts.done, status: "done" as const },
-  ];
+  return assignedTaskStatusCountRows(counts, mergeTaskStatusLabels(mockTaskStatusLabels));
 }
 
 export function mockActiveClockIns() {
@@ -4029,8 +4429,6 @@ export function mockHrDashboard() {
                 : l.leaveType === "wfh"
                   ? "Work from home"
                   : "Half day",
-        isHalfDay:
-          Boolean(l.isHalfDay) || l.leaveType === "half" || Number(l.days) === 0.5,
       };
       if (isWfh) {
         upcomingWfhItems.push(item);
@@ -4105,7 +4503,7 @@ export function mockHrDashboard() {
       pendingInvoicesCount: 2,
       revenueThisMonth: 28450,
       revenueDeltaPct: 12,
-      currency: "USD",
+      currency: mockGetOrgCurrency(),
     },
   };
 }
@@ -4126,6 +4524,63 @@ export function mockListTaskAttachments(taskId: number) {
   return (taskAttachments[taskId] ?? [])
     .filter((a) => a.listedInFiles !== false)
     .map(({ dataBase64: _data, ...meta }) => meta);
+}
+
+export function mockListWorkspaceFiles() {
+  return Object.values(taskAttachments)
+    .flat()
+    .filter((attachment) => attachment.listedInFiles !== false)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .map((attachment) => {
+      const task = tasks.find((row) => row.id === attachment.taskId);
+      const project = task?.projectId ? projects.find((row) => row.id === task.projectId) : null;
+      return {
+        id: attachment.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        fileSize: attachment.fileSize,
+        createdAt: attachment.createdAt,
+        taskId: attachment.taskId,
+        taskTitle: task?.title ?? "Task",
+        projectName: project?.name ?? null,
+      };
+    });
+}
+
+export function mockListWorkspaceMeetings() {
+  return Object.values(taskActivities)
+    .flat()
+    .filter((activity) => activity.action === "commented")
+    .map((activity) => {
+      const parsed = mockParseMeetingComment(activity.newValue);
+      if (!parsed) return null;
+      const task = tasks.find((row) => row.id === activity.taskId);
+      const project = task?.projectId ? projects.find((row) => row.id === task.projectId) : null;
+      return {
+        id: activity.id,
+        title: parsed.title,
+        when: parsed.when,
+        createdAt: activity.createdAt,
+        taskId: activity.taskId,
+        taskTitle: task?.title ?? "Task",
+        projectName: project?.name ?? null,
+        createdByName: activity.user?.name ?? null,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row != null)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
+function mockParseMeetingComment(message: string | null) {
+  if (!message?.trim()) return null;
+  const match = message.replace(/\s+/g, " ").trim().match(/^(?:📅\s*)?Event or meeting:\s*(.+)$/i);
+  if (!match?.[1]) return null;
+  const rest = match[1].trim();
+  const withWhen = rest.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+  if (withWhen?.[1]?.trim()) {
+    return { title: withWhen[1].trim(), when: withWhen[2]?.trim() || null };
+  }
+  return { title: rest, when: null };
 }
 
 export function mockGetTaskAttachment(id: number) {
@@ -4208,7 +4663,6 @@ import {
   manualLeaveEntryMessage,
   MONTHLY_PAID_LEAVES,
   roundLeaveUnits,
-  wfhRequestBlockedMessage,
   type LeaveType,
 } from "@/lib/leave-policy";
 import { workZoneDateKey, workZoneDateParts } from "@/lib/timezone";
@@ -4349,25 +4803,6 @@ function mockAssertYearScopedBalance(params: {
   }
 }
 
-function mockAssertWfhEligible(
-  userId: number,
-  leaveType: string,
-  options?: { forEmployee?: boolean },
-) {
-  if (!isWorkFromHomeLeave(leaveType)) return;
-  const user = userById(userId);
-  const message = wfhRequestBlockedMessage(
-    {
-      onNoticePeriod: Boolean(user?.onNoticePeriod),
-      dateOfJoining: user?.dateOfJoining ?? null,
-      employmentType: resolveEmploymentType(user),
-    },
-    new Date(),
-    options,
-  );
-  if (message) throw new Error(message);
-}
-
 function mockAssertNoOverlappingLeave(params: {
   userId: number;
   startDate: string;
@@ -4439,7 +4874,6 @@ export function mockApplyLeave(
   if (isWorkFromHomeLeave(input.leaveType) && input.isHalfDay) {
     throw new Error("Work from home is full day only");
   }
-  mockAssertWfhEligible(userId, input.leaveType);
 
   if (isHalfDay && input.startDate !== input.endDate) {
     throw new Error("Half day leave must be for a single day only");
@@ -4551,7 +4985,6 @@ export function mockUpdateMyLeave(
   if (isHalfDay && !allowsHalfDayLeave(input.leaveType)) {
     throw new Error("Half day is not available for this leave type");
   }
-  mockAssertWfhEligible(userId, input.leaveType);
   if (isHalfDay && input.startDate !== input.endDate) {
     throw new Error("Half day leave must be for a single day only");
   }
@@ -4657,7 +5090,6 @@ export function mockCreateManualLeave(
   if (isHalfDay && !allowsHalfDayLeave(input.leaveType)) {
     throw new Error("Half day is not available for this leave type");
   }
-  mockAssertWfhEligible(input.userId, input.leaveType, { forEmployee: true });
   if (isHalfDay && input.startDate !== input.endDate) {
     throw new Error("Half day leave must be for a single day only");
   }

@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createRouter, authedQuery, managerQuery, timeApprovalReviewerQuery } from "./middleware";
+import { createRouter, authedQuery, managerQuery, adminOrHrQuery } from "./middleware";
+import { assertPlanFeature } from "./lib/plan-guard";
 import { isAuthDisabled } from "./lib/dev-mode";
-import { assertPermission, canReviewTimeApprovals, hasPermission, TIME_APPROVAL_REVIEWER_ROLES } from "./lib/permissions";
+import { assertPermission, hasPermission } from "./lib/permissions";
 import * as mock from "./lib/mock-store";
 import {
   buildTimeStatsSummary,
@@ -14,7 +15,7 @@ import {
   filterMeaningfulAttendanceEntries,
   sumBreakSecondsInWindow,
 } from "@/lib/work-hours-policy";
-import { buildLeaveCoverageMap, canManageLeaves } from "@/lib/leave-policy";
+import { buildLeaveCoverageMap, canManageAttendance, isAttendanceTrackableUser } from "@/lib/leave-policy";
 import {
   getCollection,
   insertDoc,
@@ -57,8 +58,12 @@ import {
   resolveMonthInput,
 } from "./lib/month-attendance-compute";
 
-function assertLeaveManager(user: { role?: string | null; department?: string | null }) {
-  if (!canManageLeaves(user)) {
+function assertLeaveManager(user: {
+  role?: string | null;
+  department?: string | null;
+  permissions?: string[] | null;
+}) {
+  if (!canManageAttendance(user)) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Only HR and admins can view team attendance",
@@ -273,9 +278,23 @@ async function buildDayHoursForUser(userId: number, dateStr: string, now = new D
     0,
   );
   const breakSeconds = sumBreakSecondsInWindow(dayBreaks, start, end, now);
+  const sortedEntries = [...enrichedEntries].sort(
+    (a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime(),
+  );
+  const stillOpen = sortedEntries.some((entry) => !entry.clockOut);
+  const clockOut = stillOpen
+    ? null
+    : sortedEntries.reduce<Date | null>((latest, entry) => {
+        if (!entry.clockOut) return latest;
+        const ended = new Date(entry.clockOut);
+        if (!latest || ended.getTime() > latest.getTime()) return ended;
+        return latest;
+      }, null);
 
   return {
     entries: enrichedEntries,
+    clockIn: sortedEntries[0]?.clockIn ?? null,
+    clockOut,
     totalMinutes: totalSeconds / 60,
     totalSeconds,
     totalHours: roundHours(totalSeconds / 3600),
@@ -299,6 +318,7 @@ export const timeEntryRouter = createRouter({
         .optional(),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertPlanFeature(ctx.user, "time_tracking");
       await assertClockInWithinGeofence({
         user: ctx.user,
         latitude: input?.latitude,
@@ -697,7 +717,7 @@ export const timeEntryRouter = createRouter({
       const breakCol = await getCollection<WorkBreakDoc>(Collections.workBreaks);
       const existing = await breakCol.findOne({ id: input.id });
       if (!existing) throw new Error("Break not found");
-      if (existing.userId !== ctx.user.id && !canReviewTimeApprovals(ctx.user)) {
+      if (existing.userId !== ctx.user.id && ctx.user.role !== "admin") {
         throw new Error("Not allowed to edit this break");
       }
 
@@ -801,8 +821,8 @@ export const timeEntryRouter = createRouter({
 
       await ensureSchema();
       const targetUserId =
-        input.userId && canReviewTimeApprovals(ctx.user) ? input.userId : ctx.user.id;
-      if (input.userId && input.userId !== ctx.user.id && !canReviewTimeApprovals(ctx.user)) {
+        input.userId && ctx.user.role === "admin" ? input.userId : ctx.user.id;
+      if (input.userId && input.userId !== ctx.user.id && ctx.user.role !== "admin") {
         throw new Error("Not allowed to add a break for this user");
       }
 
@@ -892,7 +912,7 @@ export const timeEntryRouter = createRouter({
       const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
       const existing = await timeCol.findOne({ id: input.id, taskId: null });
       if (!existing) throw new Error("Attendance entry not found");
-      if (existing.userId !== ctx.user.id && !canReviewTimeApprovals(ctx.user)) {
+      if (existing.userId !== ctx.user.id && ctx.user.role !== "admin") {
         throw new Error("Not allowed to edit this attendance entry");
       }
       if (!existing.clockOut) {
@@ -1025,13 +1045,13 @@ export const timeEntryRouter = createRouter({
         title: "Manual clock-in needs approval",
         message: `${actorName} requests clock-in at ${requestedLabel} instead of ${actualLabel}: ${input.reason.trim()}`,
         approvalRequestId: request.id,
-        roles: [...TIME_APPROVAL_REVIEWER_ROLES],
+        roles: ["admin", "hr"],
       });
 
       return { ...request, requiresApproval: true };
     }),
 
-  listPendingApprovals: timeApprovalReviewerQuery.query(async ({ ctx }) => {
+  listPendingApprovals: adminOrHrQuery.query(async ({ ctx }) => {
     if (isAuthDisabled() || !hasMongoConfigured()) {
       return mock.mockListPendingApprovals();
     }
@@ -1060,7 +1080,7 @@ export const timeEntryRouter = createRouter({
     };
   }),
 
-  reviewTimeApproval: timeApprovalReviewerQuery
+  reviewTimeApproval: adminOrHrQuery
     .input(
       z.object({
         id: z.number(),
@@ -1252,7 +1272,12 @@ export const timeEntryRouter = createRouter({
       assertLeaveManager(ctx.user);
       const { year, month } = resolveMonthInput(input);
       await ensureSchema();
-      return computeTeamMonthAttendance(year, month);
+      return computeTeamMonthAttendance(
+        year,
+        month,
+        new Date(),
+        ctx.user.organizationId,
+      );
     }),
 
   getTeamHours: authedQuery
@@ -1280,10 +1305,10 @@ export const timeEntryRouter = createRouter({
       const userCol = await getCollection<UserDoc>(Collections.users);
       const allUsers = (
         await userCol
-          .find({ status: "active" })
-          .project({ id: 1, name: 1, avatar: 1, role: 1 })
+          .find({ status: "active", ...orgFilter(ctx.user) })
+          .project({ id: 1, name: 1, avatar: 1, role: 1, department: 1 })
           .toArray()
-      ).filter((user) => String(user.role ?? "").toLowerCase() !== "admin");
+      ).filter((user) => isAttendanceTrackableUser(user));
 
       const now = new Date();
       const teamHours = await Promise.all(
@@ -1298,6 +1323,8 @@ export const timeEntryRouter = createRouter({
             breakHours: day.breakHours,
             breakSeconds: day.breakSeconds,
             entriesCount: day.entriesCount,
+            clockIn: day.clockIn,
+            clockOut: day.clockOut,
           };
         }),
       );

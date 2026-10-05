@@ -2,19 +2,19 @@ import { useMemo, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { UserAvatar } from "@/components/shared/UserAvatar";
-import { Timer, Calendar, Loader2, Pencil, ChevronDown, Coffee } from "lucide-react";
+import { Timer, Calendar, Loader2, Pencil, ChevronDown, Coffee, LogIn, LogOut } from "lucide-react";
 import { localDateKey, REQUIRED_DAILY_HOURS, formatHoursMinutes, formatHoursMinutesFloored } from "@/lib/work-hours-policy";
 import { formatDuration, cn } from "@/lib/utils";
-import { canReviewTimeApprovals, hasPermission } from "@/lib/permissions";
-import { isAdminOrManagement } from "@/lib/leave-policy";
+import { hasPermission } from "@/lib/permissions";
+import { isAdminOrManagement, isAttendanceTrackableUser } from "@/lib/leave-policy";
+import { UserSearchSelect } from "@/components/tasks/UserSearchSelect";
 import { BreaksPanel } from "@/components/time-tracking/BreaksPanel";
 import {
   EditAttendanceEntryDialog,
   formatEntryDateTimeRange,
   type AttendanceEntryRow,
 } from "@/components/time-tracking/EditAttendanceEntryDialog";
-import { formatWorkZoneDateKey } from "@/lib/timezone";
-import { isNativeApp } from "@/lib/platform";
+import { formatWorkZoneDateKey, formatWorkZoneTime } from "@/lib/timezone";
 
 function formatEntryDuration(minutes: number | null | undefined) {
   if (minutes == null) return "—";
@@ -28,6 +28,112 @@ function formatDisplayDate(dateStr: string) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function hoursUtilization(totalHours: number) {
+  return Math.min(Math.round((totalHours / REQUIRED_DAILY_HOURS) * 100), 100);
+}
+
+function utilizationColor(pct: number) {
+  if (pct > 80) return "#10B981";
+  if (pct > 50) return "#F59E0B";
+  return "#DC2626";
+}
+
+function UtilizationBar({ totalHours }: { totalHours: number }) {
+  const utilization = hoursUtilization(totalHours);
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{
+            width: `${utilization}%`,
+            backgroundColor: utilizationColor(utilization),
+          }}
+        />
+      </div>
+      <span className="text-xs text-gray-500 w-8 shrink-0">{utilization}%</span>
+    </div>
+  );
+}
+
+function formatClockTime(value: Date | string | null | undefined) {
+  if (!value) return "—";
+  return formatWorkZoneTime(value, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function TeamHourWorkBreak({
+  totalHours,
+  breakSeconds,
+  clockIn,
+  clockOut,
+}: {
+  totalHours: number;
+  breakSeconds: number;
+  clockIn?: Date | string | null;
+  clockOut?: Date | string | null;
+}) {
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 rounded-lg border border-gray-200 bg-white p-3">
+      <div className="flex items-center gap-2.5">
+        <div className="h-8 w-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
+          <LogIn size={15} />
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+            Clock in
+          </div>
+          <div className="text-sm font-semibold text-[#1F2937]">
+            {formatClockTime(clockIn)}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2.5">
+        <div className="h-8 w-8 rounded-lg bg-rose-50 text-rose-700 flex items-center justify-center shrink-0">
+          <LogOut size={15} />
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+            Clock out
+          </div>
+          <div className="text-sm font-semibold text-[#1F2937]">
+            {clockIn && !clockOut ? "In progress" : formatClockTime(clockOut)}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2.5">
+        <div className="h-8 w-8 rounded-lg bg-blue-50 text-[#2563EB] flex items-center justify-center shrink-0">
+          <Timer size={15} />
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+            Working time
+          </div>
+          <div className="text-sm font-semibold text-[#1F2937]">
+            {formatHoursMinutes(totalHours)}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2.5">
+        <div className="h-8 w-8 rounded-lg bg-amber-50 text-amber-700 flex items-center justify-center shrink-0">
+          <Coffee size={15} />
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+            Break time
+          </div>
+          <div className="text-sm font-semibold text-[#1F2937]">
+            {formatHoursMinutesFloored(breakSeconds)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function DayEntriesPanel({
@@ -112,7 +218,6 @@ function DayEntriesPanel({
 
 export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
   const { user } = useAuth();
-  const native = isNativeApp();
   const canViewTeamHours =
     hasPermission(user, "time.view_team") || isAdminOrManagement(user);
   const utils = trpc.useUtils();
@@ -146,9 +251,14 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
     { enabled: showDayDetail, refetchInterval: showDayDetail ? 30_000 : false },
   );
 
+  const hourEmployees = useMemo(
+    () => (usersData?.users ?? []).filter(isAttendanceTrackableUser),
+    [usersData?.users],
+  );
+
   const selectedEmployee = useMemo(
-    () => usersData?.users.find((u) => u.id === Number(selectedEmployeeId)),
-    [usersData?.users, selectedEmployeeId],
+    () => hourEmployees.find((u) => u.id === Number(selectedEmployeeId)),
+    [hourEmployees, selectedEmployeeId],
   );
 
   const dayHoursTotal = dayHours?.totalHours ?? 0;
@@ -179,12 +289,9 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
       </div>
 
       <div
-        className={cn(
-          "flex flex-wrap items-center gap-3 p-4 bg-gray-50 rounded-xl border border-gray-100",
-          native && "flex-col items-stretch",
-        )}
+        className="flex flex-wrap items-center gap-3 p-4 bg-gray-50 rounded-xl border border-gray-100"
       >
-        <div className={cn("flex items-center gap-2", native && "w-full")}>
+        <div className="flex items-center gap-2">
           <Calendar size={16} className="text-gray-400 shrink-0" />
           <input
             type="date"
@@ -193,37 +300,31 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
               setSelectedDate(e.target.value);
               setExpandedUserId(null);
             }}
-            className={cn(
-              "h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white",
-              native && "flex-1 min-w-0",
-            )}
+            className="h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white"
           />
         </div>
 
         {canViewTeamHours ? (
-          <select
-            value={selectedEmployeeId}
-            onChange={(e) =>
-              setSelectedEmployeeId(e.target.value ? Number(e.target.value) : "")
-            }
-            className={cn(
-              "h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white",
-              native ? "w-full" : "w-full sm:w-auto sm:min-w-[220px]",
-            )}
-          >
-            <option value="">All employees</option>
-            {(usersData?.users ?? [])
-              .filter((u) => String(u.role ?? "").toLowerCase() !== "admin")
-              .map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name ?? u.email ?? `User #${u.id}`}
-              </option>
-            ))}
-          </select>
+          <div className="w-full min-w-0 sm:w-[260px]">
+            <UserSearchSelect
+              mode="single"
+              users={hourEmployees.map((person) => ({
+                id: person.id,
+                name: person.name || person.email || `User #${person.id}`,
+                avatar: person.avatar,
+              }))}
+              value={selectedEmployeeId === "" ? null : selectedEmployeeId}
+              onValueChange={(id) => setSelectedEmployeeId(id ?? "")}
+              allowClear
+              placeholder="All employees"
+              searchPlaceholder="Search employees…"
+              triggerClassName="h-9"
+            />
+          </div>
         ) : null}
 
         {!showTeamTable ? (
-          <div className={cn("text-right", native ? "w-full flex items-center justify-between" : "ml-auto")}>
+          <div className="text-right ml-auto">
             <div className="text-xs text-gray-400">Total hours</div>
             <div className="text-lg font-bold text-[#1F2937]">{dayHoursTotal}h</div>
           </div>
@@ -245,14 +346,10 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
                 ? "No attendance logged for this employee on the selected date."
                 : "No attendance logged for you on the selected date."
             }
-            onEditEntry={
-              !viewingOtherEmployee || canReviewTimeApprovals(user)
-                ? (entry) => {
-                    setEditingEntry(entry);
-                    setEditOpen(true);
-                  }
-                : undefined
-            }
+            onEditEntry={(entry) => {
+              setEditingEntry(entry);
+              setEditOpen(true);
+            }}
           />
           <BreaksPanel date={selectedDate} userId={breaksUserId} />
           <EditAttendanceEntryDialog
@@ -276,204 +373,149 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
               <Loader2 size={24} className="animate-spin text-gray-400" />
             </div>
           ) : teamHours && teamHours.length > 0 ? (
-            native ? (
-              <ul className="divide-y divide-gray-100">
+            <>
+              <div className="lg:hidden divide-y divide-gray-100">
                 {teamHours.map((member) => {
-                  const utilization = Math.min(
-                    Math.round((member.totalHours / REQUIRED_DAILY_HOURS) * 100),
-                    100,
-                  );
                   const expanded = expandedUserId === member.userId;
                   const breakSeconds =
                     member.breakSeconds ?? Math.round((member.breakHours ?? 0) * 3600);
                   return (
-                    <li key={member.userId}>
+                    <div key={member.userId} className="bg-white">
                       <button
                         type="button"
                         onClick={() =>
                           setExpandedUserId(expanded ? null : member.userId)
                         }
                         aria-expanded={expanded}
-                        className="w-full px-4 py-3.5 text-left active:bg-gray-50"
+                        className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors"
                       >
-                        <div className="flex items-start gap-3 min-w-0">
-                          <ChevronDown
-                            size={16}
-                            className={cn(
-                              "mt-2 shrink-0 text-gray-400 transition-transform",
-                              expanded && "rotate-180",
-                            )}
-                          />
-                          <UserAvatar name={member.name} avatar={member.avatar} size={36} />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <div className="text-sm font-semibold text-[#1F2937] truncate">
-                                  {member.name}
-                                </div>
-                                <div className="text-xs text-gray-400 capitalize mt-0.5">
-                                  {member.role} · {member.entriesCount}{" "}
-                                  {member.entriesCount === 1 ? "entry" : "entries"}
-                                </div>
-                              </div>
-                              <div className="text-right shrink-0">
-                                <div className="text-sm font-semibold text-[#1F2937]">
-                                  {member.totalHours}h
-                                </div>
-                                <div className="text-[11px] text-gray-400">{utilization}%</div>
-                              </div>
-                            </div>
-                            <div className="mt-2 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                              <div
-                                className="h-full rounded-full transition-all duration-500"
-                                style={{
-                                  width: `${utilization}%`,
-                                  backgroundColor:
-                                    utilization > 80
-                                      ? "#10B981"
-                                      : utilization > 50
-                                        ? "#F59E0B"
-                                        : "#DC2626",
-                                }}
-                              />
-                            </div>
+                        <UserAvatar name={member.name} avatar={member.avatar} size={36} />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-semibold text-[#1F2937]">
+                            {member.name}
+                          </div>
+                          <div className="truncate text-xs text-gray-500 capitalize">
+                            {member.role || "Employee"}
+                            {" · "}
+                            {member.totalHours}h
                           </div>
                         </div>
+                        <ChevronDown
+                          size={18}
+                          className={cn(
+                            "shrink-0 text-gray-400 transition-transform",
+                            expanded && "rotate-180",
+                          )}
+                        />
                       </button>
                       {expanded ? (
-                        <div className="px-4 pb-3.5">
-                          <div className="ml-7 grid grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-white p-3">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="h-8 w-8 rounded-lg bg-blue-50 text-[#2563EB] flex items-center justify-center shrink-0">
-                                <Timer size={15} />
+                        <div className="space-y-3 border-t border-gray-100 bg-gray-50/70 px-4 py-3">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+                                Role
                               </div>
-                              <div className="min-w-0">
-                                <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
-                                  Working
-                                </div>
-                                <div className="text-sm font-semibold text-[#1F2937] truncate">
-                                  {formatHoursMinutes(member.totalHours)}
-                                </div>
+                              <div className="text-sm font-semibold text-[#1F2937] capitalize">
+                                {member.role || "—"}
                               </div>
                             </div>
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="h-8 w-8 rounded-lg bg-amber-50 text-amber-700 flex items-center justify-center shrink-0">
-                                <Coffee size={15} />
+                            <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+                                Entries
                               </div>
-                              <div className="min-w-0">
-                                <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
-                                  Break
-                                </div>
-                                <div className="text-sm font-semibold text-[#1F2937] truncate">
-                                  {formatHoursMinutesFloored(breakSeconds)}
-                                </div>
+                              <div className="text-sm font-semibold text-[#1F2937]">
+                                {member.entriesCount}
+                              </div>
+                            </div>
+                            <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+                                Total hours
+                              </div>
+                              <div className="text-sm font-semibold text-[#1F2937]">
+                                {member.totalHours}h
+                              </div>
+                            </div>
+                            <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+                                Utilization
+                              </div>
+                              <div className="mt-1.5">
+                                <UtilizationBar totalHours={member.totalHours} />
                               </div>
                             </div>
                           </div>
-                        </div>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <>
-                <div className="grid grid-cols-[1fr_100px_100px_100px_120px] gap-4 px-5 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                  <span>Employee</span>
-                  <span>Role</span>
-                  <span>Entries</span>
-                  <span>Total Hours</span>
-                  <span>Utilization</span>
-                </div>
-                {teamHours.map((member) => {
-                  const utilization = Math.min(
-                    Math.round((member.totalHours / REQUIRED_DAILY_HOURS) * 100),
-                    100,
-                  );
-                  const expanded = expandedUserId === member.userId;
-                  const breakSeconds =
-                    member.breakSeconds ?? Math.round((member.breakHours ?? 0) * 3600);
-                  return (
-                    <div key={member.userId} className="border-b border-gray-50">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedUserId(expanded ? null : member.userId)
-                        }
-                        aria-expanded={expanded}
-                        className="w-full grid grid-cols-[1fr_100px_100px_100px_120px] gap-4 px-5 py-3 hover:bg-gray-50 transition-colors items-center text-left"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <ChevronDown
-                            size={16}
-                            className={cn(
-                              "shrink-0 text-gray-400 transition-transform",
-                              expanded && "rotate-180",
-                            )}
+                          <TeamHourWorkBreak
+                            totalHours={member.totalHours}
+                            breakSeconds={breakSeconds}
+                            clockIn={member.clockIn}
+                            clockOut={member.clockOut}
                           />
-                          <UserAvatar name={member.name} avatar={member.avatar} size={28} />
-                          <span className="text-sm text-gray-700 truncate">{member.name}</span>
-                        </div>
-                        <span className="text-xs text-gray-500 capitalize">{member.role}</span>
-                        <span className="text-sm text-gray-700">{member.entriesCount}</span>
-                        <span className="text-sm font-semibold text-[#1F2937]">
-                          {member.totalHours}h
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all duration-500"
-                              style={{
-                                width: `${utilization}%`,
-                                backgroundColor:
-                                  utilization > 80
-                                    ? "#10B981"
-                                    : utilization > 50
-                                      ? "#F59E0B"
-                                      : "#DC2626",
-                              }}
-                            />
-                          </div>
-                          <span className="text-xs text-gray-500 w-8">{utilization}%</span>
-                        </div>
-                      </button>
-                      {expanded ? (
-                        <div className="px-5 pb-3 pt-0 bg-gray-50/70">
-                          <div className="ml-8 grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-white p-3">
-                            <div className="flex items-center gap-2.5">
-                              <div className="h-8 w-8 rounded-lg bg-blue-50 text-[#2563EB] flex items-center justify-center shrink-0">
-                                <Timer size={15} />
-                              </div>
-                              <div>
-                                <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
-                                  Working time
-                                </div>
-                                <div className="text-sm font-semibold text-[#1F2937]">
-                                  {formatHoursMinutes(member.totalHours)}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2.5">
-                              <div className="h-8 w-8 rounded-lg bg-amber-50 text-amber-700 flex items-center justify-center shrink-0">
-                                <Coffee size={15} />
-                              </div>
-                              <div>
-                                <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
-                                  Break time
-                                </div>
-                                <div className="text-sm font-semibold text-[#1F2937]">
-                                  {formatHoursMinutesFloored(breakSeconds)}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
                         </div>
                       ) : null}
                     </div>
                   );
                 })}
-              </>
-            )
+              </div>
+
+              <div className="hidden lg:block overflow-x-auto">
+                <div className="min-w-[44rem]">
+                  <div className="grid grid-cols-[1fr_100px_100px_100px_120px] gap-4 px-5 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    <span>Employee</span>
+                    <span>Role</span>
+                    <span>Entries</span>
+                    <span>Total Hours</span>
+                    <span>Utilization</span>
+                  </div>
+                  {teamHours.map((member) => {
+                    const expanded = expandedUserId === member.userId;
+                    const breakSeconds =
+                      member.breakSeconds ?? Math.round((member.breakHours ?? 0) * 3600);
+                    return (
+                      <div key={member.userId} className="border-b border-gray-50">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedUserId(expanded ? null : member.userId)
+                          }
+                          aria-expanded={expanded}
+                          className="w-full grid grid-cols-[1fr_100px_100px_100px_120px] gap-4 px-5 py-3 hover:bg-gray-50 transition-colors items-center text-left"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <ChevronDown
+                              size={16}
+                              className={cn(
+                                "shrink-0 text-gray-400 transition-transform",
+                                expanded && "rotate-180",
+                              )}
+                            />
+                            <UserAvatar name={member.name} avatar={member.avatar} size={28} />
+                            <span className="text-sm text-gray-700 truncate">{member.name}</span>
+                          </div>
+                          <span className="text-xs text-gray-500 capitalize">{member.role}</span>
+                          <span className="text-sm text-gray-700">{member.entriesCount}</span>
+                          <span className="text-sm font-semibold text-[#1F2937]">
+                            {member.totalHours}h
+                          </span>
+                          <UtilizationBar totalHours={member.totalHours} />
+                        </button>
+                        {expanded ? (
+                          <div className="px-5 pb-3 pt-3 bg-gray-50/70 dark:bg-[#2c3446]">
+                            <div className="ml-8">
+                              <TeamHourWorkBreak
+                                totalHours={member.totalHours}
+                                breakSeconds={breakSeconds}
+                                clockIn={member.clockIn}
+                                clockOut={member.clockOut}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
           ) : (
             <div className="py-12 text-center text-gray-400 text-sm">No data for this date</div>
           )}
