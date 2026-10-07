@@ -4657,6 +4657,7 @@ import {
   paidLeaveLockPeriodLabel,
   resolveEmploymentType,
   toJoiningDateKey,
+  leaveRequestMatchesSearch,
   leaveTypeLabel,
   leaveTypeShort,
   managerLeaveNotificationMessage,
@@ -5173,22 +5174,48 @@ export function mockCreateManualLeave(
   return { request };
 }
 
-export function mockListLeaveRequests() {
+const MOCK_LEAVE_LIST_LIMIT = 200;
+const MOCK_LEAVE_SEARCH_RESULT_LIMIT = 300;
+
+export function mockListLeaveRequests(input?: {
+  search?: string;
+  scope?: "pending" | "all" | "approved" | "rejected" | "cancelled" | "wfh";
+}) {
+  const search = input?.search?.trim() ?? "";
+  const mapped = [...leaveRequests]
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .map((r) => ({
+      ...r,
+      employee: userById(r.userId)
+        ? {
+            id: r.userId,
+            name: userById(r.userId)!.name,
+            email: userById(r.userId)!.email,
+            avatar: userById(r.userId)!.avatar,
+            department: userById(r.userId)!.department,
+          }
+        : null,
+    }));
+
+  if (search.length >= 2) {
+    const scope = input?.scope;
+    const scoped = mapped.filter((r) => {
+      if (scope === "wfh") return isWorkFromHomeLeave(r.leaveType);
+      if (scope && scope !== "all") return r.status === scope;
+      return true;
+    });
+    const matched = scoped.filter((r) => leaveRequestMatchesSearch(r, search, r.employee));
+    return {
+      requests: matched.slice(0, MOCK_LEAVE_SEARCH_RESULT_LIMIT),
+      capped: matched.length > MOCK_LEAVE_SEARCH_RESULT_LIMIT,
+      limit: MOCK_LEAVE_SEARCH_RESULT_LIMIT,
+    };
+  }
+
   return {
-    requests: [...leaveRequests]
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .map((r) => ({
-        ...r,
-        employee: userById(r.userId)
-          ? {
-              id: r.userId,
-              name: userById(r.userId)!.name,
-              email: userById(r.userId)!.email,
-              avatar: userById(r.userId)!.avatar,
-              department: userById(r.userId)!.department,
-            }
-          : null,
-      })),
+    requests: mapped.slice(0, MOCK_LEAVE_LIST_LIMIT),
+    capped: mapped.length > MOCK_LEAVE_LIST_LIMIT,
+    limit: MOCK_LEAVE_LIST_LIMIT,
   };
 }
 

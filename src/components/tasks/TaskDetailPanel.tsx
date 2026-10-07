@@ -1835,7 +1835,7 @@ function TaskPanelContent({
               </MetaRow>
 
               <MetaRow label="Deadline" icon={Clock}>
-                <div className="inline-flex items-center gap-2 min-w-0 flex-nowrap">
+                <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
                   {canManage ? (
                     <input
                       type="datetime-local"
@@ -1848,13 +1848,14 @@ function TaskPanelContent({
                       }
                       className={cn(
                         META_DATETIME_CLASS,
+                        "w-[min(100%,240px)] max-w-full min-w-0",
                         taskOverdue && "border-red-200 text-red-600",
                       )}
                     />
                   ) : (
                     <span
                       className={cn(
-                        "inline-flex h-9 items-center text-sm shrink-0",
+                        "inline-flex h-9 max-w-full items-center text-sm",
                         taskOverdue ? "text-red-600 font-medium" : "text-gray-800",
                       )}
                     >
@@ -1862,7 +1863,7 @@ function TaskPanelContent({
                     </span>
                   )}
                   {taskOverdue && task.dueDate && (
-                    <span className="inline-flex w-fit shrink-0 items-center rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600">
+                    <span className="inline-flex w-fit items-center rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600">
                       {formatOverdueLabel(task.dueDate)}
                     </span>
                   )}
@@ -2677,7 +2678,7 @@ function MetaRow({
       <span className="text-sm text-gray-500 leading-none">{label}:</span>
       <div
         className={cn(
-          "min-w-0",
+          "min-w-0 w-full",
           align === "center" ? "flex items-center" : "flex items-start pt-1.5",
         )}
       >

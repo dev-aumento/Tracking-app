@@ -493,6 +493,91 @@ export function leaveTypeShort(type: LeaveType | string) {
   return LEAVE_TYPE_OPTIONS.find((o) => o.value === type)?.short ?? type;
 }
 
+export type LeaveSearchEmployee = {
+  name?: string | null;
+  email?: string | null;
+  department?: string | null;
+};
+
+export type LeaveSearchRequest = {
+  leaveType: string;
+  isHalfDay?: boolean | null;
+  startDate: string;
+  endDate: string;
+  days?: number | null;
+  reason?: string | null;
+  status?: string | null;
+  reviewNote?: string | null;
+};
+
+function normalizeLeaveSearchQuery(query: string) {
+  return query.trim().toLowerCase().replace(/\bcanceled\b/g, "cancelled");
+}
+
+/** Full calendar date when the query is ISO or day/month/year. */
+export function parseLeaveSearchDate(query: string): string | null {
+  const raw = query.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const dmy = raw.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  if (!dmy) return null;
+  const day = Number(dmy[1]);
+  const month = Number(dmy[2]);
+  const year = dmy[3];
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function leaveRangesOverlap(startA: string, endA: string, startB: string, endB: string) {
+  return startA <= endB && endA >= startB;
+}
+
+/** Match a leave row by employee, dates, type, status, or reason. */
+export function leaveRequestMatchesSearch(
+  request: LeaveSearchRequest,
+  query: string,
+  employee?: LeaveSearchEmployee | null,
+): boolean {
+  const q = normalizeLeaveSearchQuery(query);
+  if (!q) return true;
+
+  const status = (request.status ?? "").toLowerCase();
+  const haystack = [
+    employee?.name,
+    employee?.email,
+    employee?.department,
+    request.reason,
+    request.reviewNote,
+    status === "cancelled" ? "cancelled canceled" : status,
+    request.leaveType,
+    leaveTypeLabel(request.leaveType, {
+      isHalfDay: request.isHalfDay,
+      days: request.days,
+    }),
+    leaveTypeShort(request.leaveType),
+    isWorkFromHomeLeave(request.leaveType) ? "work from home wfh" : "",
+    request.startDate,
+    request.endDate,
+  ]
+    .filter((part) => part != null && String(part).trim() !== "")
+    .join(" ")
+    .toLowerCase();
+
+  if (haystack.includes(q)) return true;
+
+  const dateKey = parseLeaveSearchDate(q);
+  if (dateKey && request.startDate <= dateKey && dateKey <= request.endDate) return true;
+
+  if (/^\d{4}-\d{2}$/.test(q)) {
+    return leaveRangesOverlap(request.startDate, request.endDate, `${q}-01`, `${q}-31`);
+  }
+
+  if (/^\d{4}$/.test(q)) {
+    return leaveRangesOverlap(request.startDate, request.endDate, `${q}-01-01`, `${q}-12-31`);
+  }
+
+  return false;
+}
+
 export type LeaveRequestNotifyAction =
   | "new"
   | "updated"

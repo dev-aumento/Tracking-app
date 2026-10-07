@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isWfhRequestBlocked,
+  leaveRequestMatchesSearch,
   wfhRequestBlockedMessage,
 } from "@/lib/leave-policy";
 
@@ -52,5 +53,41 @@ describe("WFH notice and probation lock", () => {
     };
     expect(isWfhRequestBlocked(params, "2026-08-24")).toBe(false);
     expect(wfhRequestBlockedMessage(params, "2026-08-24")).toBeNull();
+  });
+});
+
+describe("leave request search", () => {
+  const request = {
+    leaveType: "paid",
+    isHalfDay: false,
+    startDate: "2026-03-10",
+    endDate: "2026-03-12",
+    days: 3,
+    reason: "Family function",
+    status: "approved",
+    reviewNote: null,
+  };
+
+  it("matches employee name, reason, and status", () => {
+    const employee = { name: "Priya Shah", email: "priya@example.com", department: "Design" };
+    expect(leaveRequestMatchesSearch(request, "priya", employee)).toBe(true);
+    expect(leaveRequestMatchesSearch(request, "family", employee)).toBe(true);
+    expect(leaveRequestMatchesSearch(request, "approved", employee)).toBe(true);
+    expect(leaveRequestMatchesSearch(request, "rahul", employee)).toBe(false);
+  });
+
+  it("matches a date inside the leave range", () => {
+    expect(leaveRequestMatchesSearch(request, "2026-03-11")).toBe(true);
+    expect(leaveRequestMatchesSearch(request, "11-03-2026")).toBe(true);
+    expect(leaveRequestMatchesSearch(request, "2026-03-15")).toBe(false);
+  });
+
+  it("treats canceled and cancelled as the same status", () => {
+    expect(
+      leaveRequestMatchesSearch(
+        { ...request, status: "cancelled" },
+        "canceled",
+      ),
+    ).toBe(true);
   });
 });

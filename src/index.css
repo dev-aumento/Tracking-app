@@ -373,21 +373,16 @@ html.dark textarea::placeholder {
   color: var(--dm-text-soft);
 }
 
-/* Light mode: translucent slate gradient composited over white */
 .sidebar-chrome,
 .portal-slate-gradient {
-  background-color: #677d93e5;
-  background-image: linear-gradient(to bottom,#677d937f,#677d93e5);
+  background-color: #242629e5 !important;
+  background-image: none !important;
 }
 
-/* Dark mode: previous charcoal sidebar (no light-mode gradient) */
 html.dark .sidebar-chrome {
-  background-image: none !important;
-  background-color: #0b1220 !important;
   border-right: 1px solid #1e293b;
 }
 
-/* Dark mode: hero boxes stay visible on the charcoal page */
 html.dark .portal-slate-gradient {
   background-color: #151c2c !important;
   background-image: linear-gradient(

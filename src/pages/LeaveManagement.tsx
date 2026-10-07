@@ -27,6 +27,7 @@ import {
   leaveDayUnits,
   leaveDaysInMonth,
   leaveTouchesMonth,
+  leaveRequestMatchesSearch,
   leaveTypeLabel,
   paidLeaveMonthCapacities,
   remainingMonthlyPaidLeave,
@@ -156,6 +157,8 @@ export default function LeaveManagement() {
   const utils = trpc.useUtils();
   const native = isNativeApp();
   const [filter, setFilter] = useState<FilterTab>("all");
+  const [requestSearch, setRequestSearch] = useState("");
+  const [debouncedRequestSearch, setDebouncedRequestSearch] = useState("");
   const [selectedRequest, setSelectedRequest] = useState<LeaveRequestRow | null>(null);
   const [cellLeaves, setCellLeaves] = useState<{
     employeeName: string;
@@ -184,6 +187,11 @@ export default function LeaveManagement() {
   const { data, isLoading } = trpc.leave.listPending.useQuery(undefined, {
     enabled: allowed,
   });
+  const serverSearch = debouncedRequestSearch.length >= 2 ? debouncedRequestSearch : "";
+  const { data: searchData, isFetching: searchFetching } = trpc.leave.listPending.useQuery(
+    { search: serverSearch, scope: filter },
+    { enabled: allowed && serverSearch.length >= 2 },
+  );
   const { data: usersData } = trpc.user.listForPicker.useQuery(
     { limit: 500 },
     { enabled: allowed },
@@ -347,13 +355,30 @@ export default function LeaveManagement() {
     if (next) setSelectedRequest(next);
   }, [allRequests, selectedRequest?.id]);
 
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedRequestSearch(requestSearch.trim());
+    }, 300);
+    return () => window.clearTimeout(handle);
+  }, [requestSearch]);
+
   const requests = useMemo(() => {
-    if (filter === "all") return allRequests;
-    if (filter === "wfh") {
-      return allRequests.filter((r) => isWorkFromHomeLeave(r.leaveType));
+    const query = requestSearch.trim();
+    const usingServerResults =
+      serverSearch.length >= 2 && query === serverSearch && searchData != null;
+    if (usingServerResults) {
+      return (searchData.requests ?? []) as LeaveRequestRow[];
     }
-    return allRequests.filter((r) => r.status === filter);
-  }, [allRequests, filter]);
+
+    const tabbed =
+      filter === "all"
+        ? allRequests
+        : filter === "wfh"
+          ? allRequests.filter((r) => isWorkFromHomeLeave(r.leaveType))
+          : allRequests.filter((r) => r.status === filter);
+    if (!query) return tabbed;
+    return tabbed.filter((req) => leaveRequestMatchesSearch(req, query, req.employee));
+  }, [allRequests, filter, requestSearch, searchData, serverSearch]);
 
   const pendingCount = allRequests.filter((r) => r.status === "pending").length;
   const wfhCount = allRequests.filter((r) => isWorkFromHomeLeave(r.leaveType)).length;
@@ -872,6 +897,21 @@ export default function LeaveManagement() {
     return <Navigate to="/leaves" replace />;
   }
 
+  const requestQuery = requestSearch.trim();
+  const usingServerResults =
+    serverSearch.length >= 2 && requestQuery === serverSearch && searchData != null;
+  const matchLabel = requests.length === 1 ? "request" : "requests";
+  let requestSearchStatus = `${requests.length} matching ${matchLabel}`;
+  if (requestQuery.length >= 2 && searchFetching && requests.length === 0) {
+    requestSearchStatus = "Searching all requests…";
+  } else if (usingServerResults && searchData?.capped) {
+    requestSearchStatus = `Showing ${requests.length} most recent matching ${matchLabel}. Refine the search to narrow further.`;
+  } else if (!usingServerResults && requestQuery.length > 0 && requestQuery.length < 2 && data?.capped) {
+    requestSearchStatus = `${requests.length} matching recent ${matchLabel}. Type at least 2 characters to search older requests.`;
+  } else if (!usingServerResults && requestQuery.length >= 2 && searchFetching) {
+    requestSearchStatus = `${requests.length} matching recent ${matchLabel}. Searching older requests…`;
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -891,47 +931,81 @@ export default function LeaveManagement() {
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        {(
-          [
-            { key: "all", label: "All" },
-            { key: "pending", label: "Pending" },
-            { key: "approved", label: "Approved" },
-            { key: "rejected", label: "Rejected" },
-            { key: "cancelled", label: "Cancelled" },
-            { key: "wfh", label: "WFH Requests" },
-          ] as const
-        ).map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            onClick={() => setFilter(tab.key)}
-            className={cn(
-              "h-9 px-3 rounded-lg text-sm font-medium border transition-colors",
-              filter === tab.key
-                ? tab.key === "wfh"
-                  ? "bg-teal-600 text-white border-teal-600"
-                  : "bg-[#2563EB] text-white border-[#2563EB]"
-                : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50",
-            )}
-          >
-            {tab.label}
-            {tab.key === "pending" && pendingCount > 0 ? ` (${pendingCount})` : ""}
-            {tab.key === "wfh" && wfhCount > 0 ? ` (${wfhCount})` : ""}
-          </button>
-        ))}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-wrap gap-2">
+          {(
+            [
+              { key: "all", label: "All" },
+              { key: "pending", label: "Pending" },
+              { key: "approved", label: "Approved" },
+              { key: "rejected", label: "Rejected" },
+              { key: "cancelled", label: "Cancelled" },
+              { key: "wfh", label: "WFH Requests" },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setFilter(tab.key)}
+              className={cn(
+                "h-9 px-3 rounded-lg text-sm font-medium border transition-colors",
+                filter === tab.key
+                  ? tab.key === "wfh"
+                    ? "bg-teal-600 text-white border-teal-600"
+                    : "bg-[#2563EB] text-white border-[#2563EB]"
+                  : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50",
+              )}
+            >
+              {tab.label}
+              {tab.key === "pending" && pendingCount > 0 ? ` (${pendingCount})` : ""}
+              {tab.key === "wfh" && wfhCount > 0 ? ` (${wfhCount})` : ""}
+            </button>
+          ))}
+        </div>
+        <div className={cn("relative", native ? "w-full" : "w-full lg:w-80 lg:shrink-0")}>
+          {searchFetching && requestSearch.trim().length >= 2 ? (
+            <Loader2
+              size={15}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 animate-spin pointer-events-none"
+            />
+          ) : (
+            <Search
+              size={15}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+            />
+          )}
+          <input
+            type="search"
+            value={requestSearch}
+            onChange={(e) => setRequestSearch(e.target.value)}
+            placeholder="Search name, date, or reason…"
+            aria-label="Search leave requests"
+            className="w-full h-9 pl-9 pr-3 rounded-lg border border-gray-200 bg-white text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+          />
+        </div>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        {requestSearch.trim() || (data?.capped && !isLoading) ? (
+          <div className="px-5 py-2.5 border-b border-gray-100 text-xs text-gray-500">
+            {requestSearch.trim()
+              ? requestSearchStatus
+              : `Showing the ${data?.limit ?? 200} most recent requests. Search to find older ones.`}
+          </div>
+        ) : null}
         {isLoading ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 size={24} className="animate-spin text-gray-400" />
           </div>
         ) : requests.length === 0 ? (
           <div className="py-16 text-center text-sm text-gray-500">
-            {filter === "wfh"
-              ? "No work-from-home requests yet."
-              : "No leave requests in this view."}
+            {requestSearch.trim()
+              ? searchFetching && requestSearch.trim().length >= 2
+                ? "Searching all requests…"
+                : `No requests match “${requestSearch.trim()}”.`
+              : filter === "wfh"
+                ? "No work-from-home requests yet."
+                : "No leave requests in this view."}
           </div>
         ) : (
           <div className="max-h-[26.25rem] overflow-y-auto overscroll-contain divide-y divide-gray-100 scrollbar-thin">

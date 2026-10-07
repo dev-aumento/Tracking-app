@@ -34,6 +34,7 @@ import {
   isHalfDayLeave,
   isWorkFromHomeLeave,
   leaveRequestNotificationTitle,
+  leaveRequestMatchesSearch,
   leaveTypeLabel,
   leaveTypeShort,
   managerLeaveNotificationMessage,
@@ -51,6 +52,10 @@ import { workZoneDateKey, workZoneDateParts } from "@/lib/timezone";
 function useMock() {
   return isAuthDisabled() || !hasMongoConfigured();
 }
+
+const LEAVE_LIST_LIMIT = 200;
+const LEAVE_SEARCH_RESULT_LIMIT = 300;
+const LEAVE_SEARCH_SCAN_LIMIT = 10000;
 
 const leaveTypeSchema = z.enum(["paid", "sick", "unpaid", "wfh"]);
 
@@ -741,32 +746,62 @@ export const leaveRouter = createRouter({
     return { request };
   }),
 
-  listPending: authedQuery.query(async ({ ctx }) => {
-    assertLeaveManager(ctx.user);
-    if (useMock()) return mock.mockListLeaveRequests();
+  listPending: authedQuery
+    .input(
+      z
+        .object({
+          search: z.string().trim().max(120).optional(),
+          scope: z.enum(["pending", "all", "approved", "rejected", "cancelled", "wfh"]).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
+      assertLeaveManager(ctx.user);
+      if (useMock()) return mock.mockListLeaveRequests(input ?? undefined);
 
-    await ensureSchema();
-    const col = await getCollection<LeaveRequestDoc>(Collections.leaveRequests);
-    const requests = await col
-      .find(orgFilter(ctx.user))
-      .sort({ createdAt: -1 })
-      .limit(200)
-      .toArray();
-    const userIds = [...new Set(requests.map((r) => r.userId))];
-    const usersCol = await getCollection<UserDoc>(Collections.users);
-    const users = await usersCol
-      .find({ id: { $in: userIds }, ...orgFilter(ctx.user) })
-      .project({ id: 1, name: 1, email: 1, avatar: 1, department: 1 })
-      .toArray();
-    const byId = new Map(users.map((u) => [u.id, u]));
-
-    return {
-      requests: requests.map((r) => ({
+      await ensureSchema();
+      const search = input?.search?.trim() ?? "";
+      const searching = search.length >= 2;
+      const scope = input?.scope;
+      const statusScope =
+        scope === "pending" || scope === "approved" || scope === "rejected" || scope === "cancelled"
+          ? scope
+          : undefined;
+      const listLimit = searching ? LEAVE_SEARCH_RESULT_LIMIT : LEAVE_LIST_LIMIT;
+      const col = await getCollection<LeaveRequestDoc>(Collections.leaveRequests);
+      const scanned = await col
+        .find({
+          ...orgFilter(ctx.user),
+          ...(searching && scope === "wfh" ? { leaveType: "wfh" as const } : {}),
+          ...(searching && statusScope ? { status: statusScope } : {}),
+        })
+        .sort({ createdAt: -1 })
+        .limit(searching ? LEAVE_SEARCH_SCAN_LIMIT + 1 : listLimit + 1)
+        .toArray();
+      const scanCapped = searching && scanned.length > LEAVE_SEARCH_SCAN_LIMIT;
+      const page = scanned.slice(0, searching ? LEAVE_SEARCH_SCAN_LIMIT : listLimit);
+      const userIds = [...new Set(page.map((r) => r.userId))];
+      const usersCol = await getCollection<UserDoc>(Collections.users);
+      const users = await usersCol
+        .find({ id: { $in: userIds }, ...orgFilter(ctx.user) })
+        .project({ id: 1, name: 1, email: 1, avatar: 1, department: 1 })
+        .toArray();
+      const byId = new Map(users.map((u) => [u.id, u]));
+      const withEmployees = page.map((r) => ({
         ...r,
         employee: byId.get(r.userId) ?? null,
-      })),
-    };
-  }),
+      }));
+      const matched = searching
+        ? withEmployees.filter((r) => leaveRequestMatchesSearch(r, search, r.employee))
+        : withEmployees;
+      const requests = matched.slice(0, listLimit);
+
+      return {
+        requests,
+        capped: scanCapped || matched.length > listLimit || (!searching && scanned.length > listLimit),
+        limit: listLimit,
+      };
+    }),
 
   review: authedQuery.input(reviewSchema).mutation(async ({ ctx, input }) => {
     assertLeaveManager(ctx.user);
