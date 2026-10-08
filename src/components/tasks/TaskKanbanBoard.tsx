@@ -62,8 +62,29 @@ function kanbanPosition(task: { position?: number | null }) {
     : 0;
 }
 
-function orderedColumnTasks<T extends { position?: number | null }>(tasks: T[]) {
+function orderedColumnTasks<T extends { id: number; position?: number | null }>(tasks: T[]) {
   return [...tasks].sort((a, b) => kanbanPosition(a) - kanbanPosition(b));
+}
+
+function applyColumnOrder<T extends { id: number; position?: number | null }>(
+  tasks: T[],
+  ids: number[] | undefined,
+) {
+  const sorted = orderedColumnTasks(tasks);
+  if (!ids?.length) return sorted;
+  const byId = new Map(sorted.map((task) => [task.id, task]));
+  const ordered: T[] = [];
+  const seen = new Set<number>();
+  for (const id of ids) {
+    const task = byId.get(id);
+    if (!task) continue;
+    ordered.push(task);
+    seen.add(id);
+  }
+  for (const task of sorted) {
+    if (!seen.has(task.id)) ordered.push(task);
+  }
+  return ordered;
 }
 
 function columnKeyOf(task: KanbanTask, columnKeys: string[]) {
@@ -74,59 +95,56 @@ function columnKeyOf(task: KanbanTask, columnKeys: string[]) {
   );
 }
 
-function buildReorderItems(
+function planColumnReorder(
   tasks: KanbanTask[],
   columnKeys: string[],
+  columnOrder: Record<string, number[]>,
   taskId: number,
   target: DropTarget,
-): ReorderItem[] {
+): { items: ReorderItem[]; orders: Record<string, number[]> } | null {
   const dragged = tasks.find((task) => task.id === taskId);
-  if (!dragged) return [];
+  if (!dragged) return null;
 
   const sourceKey = columnKeyOf(dragged, columnKeys);
-  const items: ReorderItem[] = [];
-
-  const collect = (columnKey: string, list: KanbanTask[]) => {
-    list.forEach((task, index) => {
-      const stageChanged = task.id === taskId && columnKey !== sourceKey;
-      const positionChanged = kanbanPosition(task) !== index;
-      if (!stageChanged && !positionChanged) return;
-      items.push({
-        id: task.id,
-        position: index,
-        ...(stageChanged ? { stage: columnKey } : {}),
-      });
-    });
-  };
+  const source = applyColumnOrder(
+    tasks.filter((task) => taskBelongsToPipelineColumn(task, sourceKey)),
+    columnOrder[sourceKey],
+  ).filter((task) => task.id !== taskId);
 
   if (sourceKey === target.columnKey) {
-    const current = orderedColumnTasks(
+    const index = Math.max(0, Math.min(target.index, source.length));
+    const next = [...source.slice(0, index), dragged, ...source.slice(index)];
+    const previous = applyColumnOrder(
       tasks.filter((task) => taskBelongsToPipelineColumn(task, sourceKey)),
+      columnOrder[sourceKey],
     );
-    const from = current.findIndex((task) => task.id === taskId);
-    if (from < 0) return [];
-    let to = target.index;
-    if (to > from) to -= 1;
-    to = Math.max(0, Math.min(to, current.length - 1));
-    if (to === from) return [];
-    const next = [...current];
-    const [moved] = next.splice(from, 1);
-    if (!moved) return [];
-    next.splice(to, 0, moved);
-    collect(sourceKey, next);
-    return items;
+    if (next.every((task, index) => task.id === previous[index]?.id)) return null;
+    return {
+      items: next.map((task, index) => ({ id: task.id, position: index })),
+      orders: { [sourceKey]: next.map((task) => task.id) },
+    };
   }
 
-  const source = orderedColumnTasks(
-    tasks.filter((task) => taskBelongsToPipelineColumn(task, sourceKey)),
-  ).filter((task) => task.id !== taskId);
-  const dest = orderedColumnTasks(
+  const dest = applyColumnOrder(
     tasks.filter((task) => taskBelongsToPipelineColumn(task, target.columnKey)),
+    columnOrder[target.columnKey],
   ).filter((task) => task.id !== taskId);
   const index = Math.max(0, Math.min(target.index, dest.length));
-  collect(target.columnKey, [...dest.slice(0, index), dragged, ...dest.slice(index)]);
-  collect(sourceKey, source);
-  return items;
+  const nextDest = [...dest.slice(0, index), dragged, ...dest.slice(index)];
+  return {
+    items: [
+      ...nextDest.map((task, position) => ({
+        id: task.id,
+        position,
+        ...(task.id === taskId ? { stage: target.columnKey } : {}),
+      })),
+      ...source.map((task, position) => ({ id: task.id, position })),
+    ],
+    orders: {
+      [target.columnKey]: nextDest.map((task) => task.id),
+      [sourceKey]: source.map((task) => task.id),
+    },
+  };
 }
 
 function columnUnderPointer(
@@ -182,10 +200,13 @@ function scrollBoardAtPointer(board: HTMLElement | null, clientX: number, client
   if (delta !== 0) board.scrollLeft += delta;
 }
 
-function dropIndexInColumn(scroller: HTMLElement, clientY: number) {
-  const cards = [...scroller.querySelectorAll<HTMLElement>("[data-kanban-task-id]")];
+function dropIndexInColumn(scroller: HTMLElement, clientY: number, draggedId: number | null) {
+  const cards = [...scroller.querySelectorAll<HTMLElement>("[data-kanban-task-id]")].filter(
+    (el) => draggedId == null || Number(el.dataset.kanbanTaskId) !== draggedId,
+  );
   for (let index = 0; index < cards.length; index += 1) {
     const rect = cards[index].getBoundingClientRect();
+    if (rect.height <= 0) continue;
     if (clientY < rect.top + rect.height / 2) return index;
   }
   return cards.length;
@@ -373,6 +394,10 @@ export function TaskKanbanBoard({
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
   const columnKeysRef = useRef<string[]>([]);
+  const [columnOrder, setColumnOrder] = useState<Record<string, number[]>>({});
+  const columnOrderRef = useRef(columnOrder);
+  columnOrderRef.current = columnOrder;
+  const draggingIdRef = useRef<number | null>(null);
   const updateDropRef = useRef<(x: number, y: number) => void>(() => {});
   const commitDropRef = useRef<(taskId: number) => void>(() => {});
   const draggingActiveRef = useRef(false);
@@ -414,6 +439,7 @@ export function TaskKanbanBoard({
           };
         }),
       });
+      utils.task.list.setQueriesData({}, (current) => (current ? apply(current) : current));
       if (previous) utils.task.list.setData(listInput, apply(previous));
       return { previous };
     },
@@ -455,6 +481,7 @@ export function TaskKanbanBoard({
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
         active = true;
         draggingActiveRef.current = true;
+        draggingIdRef.current = taskId;
         didDragRef.current = true;
         setDraggingId(taskId);
       }
@@ -469,6 +496,7 @@ export function TaskKanbanBoard({
       pointerRef.current = { x: ev.clientX, y: ev.clientY };
       updateDropRef.current(ev.clientX, ev.clientY);
       commitDropRef.current(taskId);
+      draggingIdRef.current = null;
       dropTargetRef.current = null;
       setDropTarget(null);
       setDraggingId(null);
@@ -481,6 +509,7 @@ export function TaskKanbanBoard({
       if (ev.pointerId !== pointerId) return;
       detach();
       draggingActiveRef.current = false;
+      draggingIdRef.current = null;
       dropTargetRef.current = null;
       setDropTarget(null);
       setDraggingId(null);
@@ -537,7 +566,7 @@ export function TaskKanbanBoard({
   };
 
   const tasksByColumn = (columnKey: string) =>
-    orderedColumnTasks(tasksForPipelineColumn(tasks, columnKey));
+    applyColumnOrder(tasksForPipelineColumn(tasks, columnKey), columnOrder[columnKey]);
 
   if (isLoading) {
     return (
@@ -553,7 +582,10 @@ export function TaskKanbanBoard({
   updateDropRef.current = (x, y) => {
     const hit = columnUnderPointer(columnScrollersRef.current, x, y);
     const next = hit
-      ? { columnKey: hit.key, index: dropIndexInColumn(hit.el, y) }
+      ? {
+          columnKey: hit.key,
+          index: dropIndexInColumn(hit.el, y, draggingIdRef.current),
+        }
       : null;
     const prev = dropTargetRef.current;
     if (prev?.columnKey === next?.columnKey && prev?.index === next?.index) return;
@@ -564,9 +596,27 @@ export function TaskKanbanBoard({
   commitDropRef.current = (taskId) => {
     const target = dropTargetRef.current;
     if (!target) return;
-    const items = buildReorderItems(tasksRef.current, columnKeysRef.current, taskId, target);
-    if (items.length === 0) return;
-    reorderMutation.mutate({ items });
+    const plan = planColumnReorder(
+      tasksRef.current,
+      columnKeysRef.current,
+      columnOrderRef.current,
+      taskId,
+      target,
+    );
+    if (!plan) return;
+    const previousOrder = columnOrderRef.current;
+    const nextOrder = { ...previousOrder, ...plan.orders };
+    columnOrderRef.current = nextOrder;
+    setColumnOrder(nextOrder);
+    reorderMutation.mutate(
+      { items: plan.items },
+      {
+        onError: () => {
+          columnOrderRef.current = previousOrder;
+          setColumnOrder(previousOrder);
+        },
+      },
+    );
   };
   const draggingTask = draggingId == null ? null : tasks.find((task) => task.id === draggingId) ?? null;
 
@@ -607,6 +657,10 @@ export function TaskKanbanBoard({
       <div className="flex gap-3 w-max min-w-full pb-2 items-stretch h-full">
       {columns.map((column, columnIndex) => {
         const columnTasks = tasksByColumn(column.key);
+        const visibleTasks =
+          draggingId == null
+            ? columnTasks
+            : columnTasks.filter((task) => task.id !== draggingId);
         const isDragOver = dropTarget?.columnKey === column.key;
         const headerTextColor = contrastingTextOnColor(column.color);
         const countBadgeClass =
@@ -762,15 +816,15 @@ export function TaskKanbanBoard({
               className="flex-1 flex flex-col p-2.5 min-h-0 overflow-y-auto overscroll-y-contain scrollbar-thin"
             >
               <div className="space-y-2.5">
-              <AnimatePresence mode="sync">
-                {columnTasks.map((task, index) => (
+              <AnimatePresence mode="popLayout" initial={false}>
+                {visibleTasks.map((task, index) => (
                   <div key={task.id} className="relative">
                     {isDragOver && dropTarget?.index === index && (
                       <div className="pointer-events-none absolute -top-1.5 left-0 right-0 z-10 h-1 rounded-full bg-[#2563EB]" />
                     )}
                     <KanbanTaskCard
                       task={task}
-                      isDragging={draggingId === task.id}
+                      isDragging={false}
                       isHighlighted={highlightedTaskId === task.id}
                       onPointerDown={(e) => startPointerDrag(e, task.id)}
                       onClick={() => {
@@ -781,11 +835,11 @@ export function TaskKanbanBoard({
                 ))}
               </AnimatePresence>
 
-              {isDragOver && dropTarget?.index === columnTasks.length && (
+              {isDragOver && dropTarget?.index === visibleTasks.length && (
                 <div className="h-1 rounded-full bg-[#2563EB]" />
               )}
 
-              {columnTasks.length === 0 && isDragOver && (
+              {visibleTasks.length === 0 && isDragOver && (
                 <p className="text-xs text-[#2563EB] text-center py-8">Drop here</p>
               )}
               </div>
