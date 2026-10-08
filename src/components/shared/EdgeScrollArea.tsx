@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, type ReactNode, type Ref } from "react";
 import { cn } from "@/lib/utils";
 
 const EDGE_ZONE_PX = 80;
@@ -9,12 +9,15 @@ interface EdgeScrollAreaProps {
   className?: string;
   /** Show a visible horizontal scrollbar at the bottom. */
   showScrollbar?: boolean;
+  /** Horizontal scroller, so a card drag can scroll columns that are off screen. */
+  scrollerRef?: Ref<HTMLDivElement>;
 }
 
 export function EdgeScrollArea({
   children,
   className = "",
   showScrollbar = false,
+  scrollerRef,
 }: EdgeScrollAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const directionRef = useRef(0);
@@ -86,9 +89,19 @@ export function EdgeScrollArea({
     directionRef.current = 0;
   }, []);
 
+  const setScroller = useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollRef.current = node;
+      if (!scrollerRef) return;
+      if (typeof scrollerRef === "function") scrollerRef(node);
+      else scrollerRef.current = node;
+    },
+    [scrollerRef],
+  );
+
   return (
     <div
-      ref={scrollRef}
+      ref={setScroller}
       className={cn(
         "w-full",
         showScrollbar ? "funnel-h-scroll-bar" : "funnel-h-scroll",

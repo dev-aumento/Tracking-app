@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { trpc } from "@/providers/trpc";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { PriorityBadge } from "@/components/shared/StatusBadge";
@@ -13,7 +14,6 @@ import {
 } from "@/lib/task-deadline";
 import { formatDurationClock } from "@/lib/utils";
 import { invalidateProjectStats } from "@/lib/project-stats";
-import { applyOptimisticTaskUpdate } from "@/lib/task-cache";
 import { refreshDashboardStats } from "@/lib/dashboard-refresh";
 import { taskLocateHighlightClass } from "@/hooks/useLocateTaskInView";
 import { cn } from "@/lib/utils";
@@ -21,6 +21,7 @@ import {
   PROJECT_PIPELINE_STAGES,
   contrastingTextOnColor,
   isPipelineStageDeletable,
+  taskBelongsToPipelineColumn,
   tasksForPipelineColumn,
   withOrphanPipelineStages,
   type PipelineStageDef,
@@ -33,56 +34,161 @@ type KanbanTask = {
   status: string;
   stage?: string | null;
   priority: string;
+  position?: number | null;
   dueDate?: string | Date | null;
   estimatedHours?: string | number | null;
   actualHours?: string | number | null;
   assignee?: { name: string | null; avatar?: string | null } | null;
 };
 
-const COLUMN_SCROLL_EDGE_PX = 72;
-const COLUMN_SCROLL_MAX_SPEED = 16;
+type DropTarget = { columnKey: string; index: number };
 
-/** Native drag does not scroll overflow columns. Speed up as the pointer nears the edge. */
-function columnEdgeSpeed(distanceFromOuterEdge: number) {
-  const clamped = Math.min(
-    COLUMN_SCROLL_EDGE_PX,
-    Math.max(0, distanceFromOuterEdge),
+type ReorderItem = { id: number; position: number; stage?: string };
+
+const COLUMN_SCROLL_EDGE_PX = 140;
+const COLUMN_SCROLL_MAX_SPEED = 22;
+const BOARD_SCROLL_EDGE_PX = 80;
+const BOARD_SCROLL_MAX_SPEED = 18;
+
+function edgeDelta(distanceFromOuterEdge: number, edgePx: number, maxSpeed: number) {
+  const clamped = Math.min(edgePx, Math.max(0, distanceFromOuterEdge));
+  const intensity = 1 - clamped / edgePx;
+  return (0.5 + 0.5 * intensity) * maxSpeed;
+}
+
+function kanbanPosition(task: { position?: number | null }) {
+  return typeof task.position === "number" && Number.isFinite(task.position)
+    ? task.position
+    : 0;
+}
+
+function orderedColumnTasks<T extends { position?: number | null }>(tasks: T[]) {
+  return [...tasks].sort((a, b) => kanbanPosition(a) - kanbanPosition(b));
+}
+
+function columnKeyOf(task: KanbanTask, columnKeys: string[]) {
+  return (
+    columnKeys.find((key) => taskBelongsToPipelineColumn(task, key)) ??
+    task.stage ??
+    "new"
   );
-  const intensity = 1 - clamped / COLUMN_SCROLL_EDGE_PX;
-  return (0.35 + 0.65 * intensity) * COLUMN_SCROLL_MAX_SPEED;
 }
 
-function columnScrollVelocity(
-  el: HTMLElement,
-  clientX: number,
-  clientY: number,
-): number | null {
-  const rect = el.getBoundingClientRect();
-  const x = clientX - rect.left;
-  if (x < -6 || x > rect.width + 6) return null;
-  if (el.scrollHeight - el.clientHeight <= 1) return 0;
+function buildReorderItems(
+  tasks: KanbanTask[],
+  columnKeys: string[],
+  taskId: number,
+  target: DropTarget,
+): ReorderItem[] {
+  const dragged = tasks.find((task) => task.id === taskId);
+  if (!dragged) return [];
 
-  const y = clientY - rect.top;
-  if (y < COLUMN_SCROLL_EDGE_PX) {
-    return -columnEdgeSpeed(y);
+  const sourceKey = columnKeyOf(dragged, columnKeys);
+  const items: ReorderItem[] = [];
+
+  const collect = (columnKey: string, list: KanbanTask[]) => {
+    list.forEach((task, index) => {
+      const stageChanged = task.id === taskId && columnKey !== sourceKey;
+      const positionChanged = kanbanPosition(task) !== index;
+      if (!stageChanged && !positionChanged) return;
+      items.push({
+        id: task.id,
+        position: index,
+        ...(stageChanged ? { stage: columnKey } : {}),
+      });
+    });
+  };
+
+  if (sourceKey === target.columnKey) {
+    const current = orderedColumnTasks(
+      tasks.filter((task) => taskBelongsToPipelineColumn(task, sourceKey)),
+    );
+    const from = current.findIndex((task) => task.id === taskId);
+    if (from < 0) return [];
+    let to = target.index;
+    if (to > from) to -= 1;
+    to = Math.max(0, Math.min(to, current.length - 1));
+    if (to === from) return [];
+    const next = [...current];
+    const [moved] = next.splice(from, 1);
+    if (!moved) return [];
+    next.splice(to, 0, moved);
+    collect(sourceKey, next);
+    return items;
   }
-  const fromBottom = rect.height - y;
-  if (fromBottom < COLUMN_SCROLL_EDGE_PX) {
-    return columnEdgeSpeed(fromBottom);
-  }
-  return 0;
+
+  const source = orderedColumnTasks(
+    tasks.filter((task) => taskBelongsToPipelineColumn(task, sourceKey)),
+  ).filter((task) => task.id !== taskId);
+  const dest = orderedColumnTasks(
+    tasks.filter((task) => taskBelongsToPipelineColumn(task, target.columnKey)),
+  ).filter((task) => task.id !== taskId);
+  const index = Math.max(0, Math.min(target.index, dest.length));
+  collect(target.columnKey, [...dest.slice(0, index), dragged, ...dest.slice(index)]);
+  collect(sourceKey, source);
+  return items;
 }
 
-function resolveColumnScroll(
+function columnUnderPointer(
   columns: Map<string, HTMLElement>,
   clientX: number,
   clientY: number,
-): { key: string | null; speed: number } {
+) {
   for (const [key, el] of columns) {
-    const speed = columnScrollVelocity(el, clientX, clientY);
-    if (speed !== null) return { key, speed };
+    const rect = el.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right) continue;
+    return { key, el, rect, offsetY: clientY - rect.top };
   }
-  return { key: null, speed: 0 };
+  return null;
+}
+
+function scrollColumnAtPointer(
+  columns: Map<string, HTMLElement>,
+  clientX: number,
+  clientY: number,
+) {
+  const hit = columnUnderPointer(columns, clientX, clientY);
+  if (!hit) return false;
+  const maxScroll = hit.el.scrollHeight - hit.el.clientHeight;
+  if (maxScroll <= 1) return false;
+
+  const edge = Math.min(COLUMN_SCROLL_EDGE_PX, Math.max(56, hit.rect.height * 0.22));
+  let delta = 0;
+  if (hit.offsetY < edge) {
+    delta = -edgeDelta(hit.offsetY, edge, COLUMN_SCROLL_MAX_SPEED);
+  } else if (hit.rect.height - hit.offsetY < edge) {
+    delta = edgeDelta(hit.rect.height - hit.offsetY, edge, COLUMN_SCROLL_MAX_SPEED);
+  }
+  if (delta === 0) return false;
+
+  const next = Math.min(maxScroll, Math.max(0, hit.el.scrollTop + delta));
+  if (next === hit.el.scrollTop) return false;
+  hit.el.scrollTop = next;
+  return true;
+}
+
+function scrollBoardAtPointer(board: HTMLElement | null, clientX: number, clientY: number) {
+  if (!board || board.scrollWidth - board.clientWidth <= 1) return;
+  const rect = board.getBoundingClientRect();
+  if (clientY < rect.top || clientY > rect.bottom) return;
+  const offsetX = clientX - rect.left;
+  if (offsetX < -24 || offsetX > rect.width + 24) return;
+  let delta = 0;
+  if (offsetX < BOARD_SCROLL_EDGE_PX) {
+    delta = -edgeDelta(offsetX, BOARD_SCROLL_EDGE_PX, BOARD_SCROLL_MAX_SPEED);
+  } else if (rect.width - offsetX < BOARD_SCROLL_EDGE_PX) {
+    delta = edgeDelta(rect.width - offsetX, BOARD_SCROLL_EDGE_PX, BOARD_SCROLL_MAX_SPEED);
+  }
+  if (delta !== 0) board.scrollLeft += delta;
+}
+
+function dropIndexInColumn(scroller: HTMLElement, clientY: number) {
+  const cards = [...scroller.querySelectorAll<HTMLElement>("[data-kanban-task-id]")];
+  for (let index = 0; index < cards.length; index += 1) {
+    const rect = cards[index].getBoundingClientRect();
+    if (clientY < rect.top + rect.height / 2) return index;
+  }
+  return cards.length;
 }
 
 function formatKanbanDeadline(dueDate: string | Date) {
@@ -118,17 +224,15 @@ function formatKanbanHours(
 
 function KanbanTaskCard({
   task,
-  draggedTask,
+  isDragging,
   isHighlighted,
-  onDragStart,
-  onDragEnd,
+  onPointerDown,
   onClick,
 }: {
   task: KanbanTask;
-  draggedTask: number | null;
+  isDragging?: boolean;
   isHighlighted?: boolean;
-  onDragStart: (e: React.DragEvent) => void;
-  onDragEnd: () => void;
+  onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
   onClick: () => void;
 }) {
   const overdue = isTaskOverdue(task);
@@ -151,19 +255,18 @@ function KanbanTaskCard({
 
   return (
     <motion.div
-      draggable
       data-task-locate-id={task.id}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
+      data-kanban-task-id={task.id}
+      onPointerDown={onPointerDown}
       initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
+      animate={{ opacity: isDragging ? 0.35 : 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95 }}
       transition={{ duration: 0.2 }}
       onClick={onClick}
       className={cn(
-        "bg-white rounded-lg p-3.5 cursor-grab active:cursor-grabbing transition-shadow border-2",
+        "bg-white rounded-lg p-3.5 cursor-grab touch-none select-none transition-shadow border-2",
         borderClass,
-        draggedTask === task.id && "opacity-50",
+        isDragging && "cursor-grabbing",
         isHighlighted && taskLocateHighlightClass,
       )}
     >
@@ -259,14 +362,20 @@ export function TaskKanbanBoard({
   onReorderSection,
   reorderingSection = false,
 }: TaskKanbanBoardProps) {
-  const [draggedTask, setDraggedTask] = useState<number | null>(null);
+  const [draggingId, setDraggingId] = useState<number | null>(null);
   const didDragRef = useRef(false);
-  const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  const dropTargetRef = useRef<DropTarget | null>(null);
   const columnScrollersRef = useRef(new Map<string, HTMLDivElement>());
-  const columnScrollRef = useRef<{ key: string | null; speed: number }>({
-    key: null,
-    speed: 0,
-  });
+  const boardScrollerRef = useRef<HTMLDivElement | null>(null);
+  const pointerRef = useRef({ x: 0, y: 0 });
+  const ghostRef = useRef<HTMLDivElement | null>(null);
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
+  const columnKeysRef = useRef<string[]>([]);
+  const updateDropRef = useRef<(x: number, y: number) => void>(() => {});
+  const commitDropRef = useRef<(taskId: number) => void>(() => {});
+  const draggingActiveRef = useRef(false);
   const [isAddingSection, setIsAddingSection] = useState(false);
   const [newSectionLabel, setNewSectionLabel] = useState("");
   const newSectionInputRef = useRef<HTMLInputElement>(null);
@@ -279,12 +388,33 @@ export function TaskKanbanBoard({
   const listInput =
     listQueryInput ?? (projectId ? { projectId, limit: 200 } : { limit: 200 });
 
-  const updateMutation = trpc.task.update.useMutation({
-    onMutate: async (input) => {
-      const current = tasks.find((task) => task.id === input.id);
-      if (!current) return {};
+  const reorderMutation = trpc.task.reorder.useMutation({
+    onMutate: async ({ items }) => {
+      await utils.task.list.cancel();
       const previous = utils.task.list.getData(listInput);
-      await applyOptimisticTaskUpdate(utils, current, input);
+      const byId = new Map(items.map((item) => [item.id, item]));
+      const apply = <T extends { tasks: Array<{ id: number; status: string }> }>(data: T) => ({
+        ...data,
+        tasks: data.tasks.map((task) => {
+          const next = byId.get(task.id);
+          if (!next) return task;
+          return {
+            ...task,
+            position: next.position,
+            ...(next.stage
+              ? {
+                  stage: next.stage,
+                  ...(next.stage === "finished"
+                    ? { status: "done" as const, assigneeId: null, assignee: null }
+                    : task.status === "done"
+                      ? { status: "in_progress" as const }
+                      : {}),
+                }
+              : {}),
+          };
+        }),
+      });
+      if (previous) utils.task.list.setData(listInput, apply(previous));
       return { previous };
     },
     onError: (_err, _input, context) => {
@@ -303,76 +433,88 @@ export function TaskKanbanBoard({
     },
   });
 
-  const stopColumnScroll = () => {
-    columnScrollRef.current = { key: null, speed: 0 };
-  };
+  const startPointerDrag = (event: React.PointerEvent<HTMLDivElement>, taskId: number) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    pointerRef.current = { x: startX, y: startY };
+    let active = false;
 
-  const handleDragStart = (e: React.DragEvent, taskId: number) => {
-    e.stopPropagation();
-    didDragRef.current = true;
-    setDraggedTask(taskId);
-  };
+    const detach = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
 
-  const handleDragOver = (e: React.DragEvent, columnKey: string) => {
-    e.preventDefault();
-    setDragOverColumn(columnKey);
-  };
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      pointerRef.current = { x: ev.clientX, y: ev.clientY };
+      if (!active) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+        active = true;
+        draggingActiveRef.current = true;
+        didDragRef.current = true;
+        setDraggingId(taskId);
+      }
+      updateDropRef.current(ev.clientX, ev.clientY);
+    };
 
-  const handleDrop = (e: React.DragEvent, columnKey: string) => {
-    e.preventDefault();
-    if (draggedTask) {
-      updateMutation.mutate({
-        id: draggedTask,
-        stage: columnKey,
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      detach();
+      if (!active) return;
+      draggingActiveRef.current = false;
+      pointerRef.current = { x: ev.clientX, y: ev.clientY };
+      updateDropRef.current(ev.clientX, ev.clientY);
+      commitDropRef.current(taskId);
+      dropTargetRef.current = null;
+      setDropTarget(null);
+      setDraggingId(null);
+      requestAnimationFrame(() => {
+        didDragRef.current = false;
       });
-    }
-    stopColumnScroll();
-    setDraggedTask(null);
-    setDragOverColumn(null);
-  };
+    };
 
-  const handleDragEnd = () => {
-    stopColumnScroll();
-    setDraggedTask(null);
-    setDragOverColumn(null);
-    requestAnimationFrame(() => {
-      didDragRef.current = false;
-    });
+    const onCancel = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      detach();
+      draggingActiveRef.current = false;
+      dropTargetRef.current = null;
+      setDropTarget(null);
+      setDraggingId(null);
+      requestAnimationFrame(() => {
+        didDragRef.current = false;
+      });
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
   };
 
   useEffect(() => {
-    if (draggedTask == null) return;
-
+    if (draggingId == null) return;
+    const previousCursor = document.body.style.cursor;
+    document.body.style.cursor = "grabbing";
     let frame = 0;
-    const syncScroll = (event: DragEvent) => {
-      if (event.clientX === 0 && event.clientY === 0) return;
-      const next = resolveColumnScroll(
-        columnScrollersRef.current,
-        event.clientX,
-        event.clientY,
-      );
-      columnScrollRef.current = next;
-      if (event.type === "dragover" && next.speed !== 0) event.preventDefault();
-    };
     const tick = () => {
-      const { key, speed } = columnScrollRef.current;
-      if (key && speed !== 0) {
-        const el = columnScrollersRef.current.get(key);
-        if (el) el.scrollTop += speed;
-      }
+      if (!draggingActiveRef.current) return;
+      const { x, y } = pointerRef.current;
+      scrollBoardAtPointer(boardScrollerRef.current, x, y);
+      scrollColumnAtPointer(columnScrollersRef.current, x, y);
+      updateDropRef.current(x, y);
+      const ghost = ghostRef.current;
+      if (ghost) ghost.style.transform = `translate(${x + 12}px, ${y + 14}px)`;
       frame = requestAnimationFrame(tick);
     };
-
-    window.addEventListener("dragover", syncScroll, true);
-    window.addEventListener("drag", syncScroll, true);
     frame = requestAnimationFrame(tick);
     return () => {
-      window.removeEventListener("dragover", syncScroll, true);
-      window.removeEventListener("drag", syncScroll, true);
+      document.body.style.cursor = previousCursor;
       cancelAnimationFrame(frame);
-      stopColumnScroll();
     };
-  }, [draggedTask]);
+  }, [draggingId]);
 
   const submitNewSection = async () => {
     const label = newSectionLabel.trim();
@@ -394,7 +536,8 @@ export function TaskKanbanBoard({
     setEditingLabel("");
   };
 
-  const tasksByColumn = (columnKey: string) => tasksForPipelineColumn(tasks, columnKey);
+  const tasksByColumn = (columnKey: string) =>
+    orderedColumnTasks(tasksForPipelineColumn(tasks, columnKey));
 
   if (isLoading) {
     return (
@@ -406,6 +549,26 @@ export function TaskKanbanBoard({
 
   const boardHeightClass = "h-[calc(100vh-12.5rem)] !overflow-y-hidden";
   const columns = withOrphanPipelineStages(stages, tasks);
+  columnKeysRef.current = columns.map((column) => column.key);
+  updateDropRef.current = (x, y) => {
+    const hit = columnUnderPointer(columnScrollersRef.current, x, y);
+    const next = hit
+      ? { columnKey: hit.key, index: dropIndexInColumn(hit.el, y) }
+      : null;
+    const prev = dropTargetRef.current;
+    if (prev?.columnKey === next?.columnKey && prev?.index === next?.index) return;
+    if (!prev && !next) return;
+    dropTargetRef.current = next;
+    setDropTarget(next);
+  };
+  commitDropRef.current = (taskId) => {
+    const target = dropTargetRef.current;
+    if (!target) return;
+    const items = buildReorderItems(tasksRef.current, columnKeysRef.current, taskId, target);
+    if (items.length === 0) return;
+    reorderMutation.mutate({ items });
+  };
+  const draggingTask = draggingId == null ? null : tasks.find((task) => task.id === draggingId) ?? null;
 
   const submitRename = async () => {
     if (!editingColumnKey || !onRenameSection || renamingSection) return;
@@ -440,11 +603,11 @@ export function TaskKanbanBoard({
   };
 
   return (
-    <EdgeScrollArea className={boardHeightClass} showScrollbar>
+    <EdgeScrollArea className={boardHeightClass} showScrollbar scrollerRef={boardScrollerRef}>
       <div className="flex gap-3 w-max min-w-full pb-2 items-stretch h-full">
       {columns.map((column, columnIndex) => {
         const columnTasks = tasksByColumn(column.key);
-        const isDragOver = dragOverColumn === column.key;
+        const isDragOver = dropTarget?.columnKey === column.key;
         const headerTextColor = contrastingTextOnColor(column.color);
         const countBadgeClass =
           headerTextColor === "#FFFFFF"
@@ -461,13 +624,6 @@ export function TaskKanbanBoard({
               className={`w-[260px] shrink-0 bg-gray-50/80 border-2 rounded-xl flex flex-col h-full overflow-hidden transition-colors ${
                 isDragOver ? "border-[#2563EB]/40 bg-blue-50/50" : "border-dashed border-gray-200"
               }`}
-              onDragOver={(e) => handleDragOver(e, column.key)}
-              onDrop={(e) => handleDrop(e, column.key)}
-              onDragLeave={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                  setDragOverColumn(null);
-                }
-              }}
             >
             <div
               className={cn(
@@ -607,20 +763,27 @@ export function TaskKanbanBoard({
             >
               <div className="space-y-2.5">
               <AnimatePresence mode="sync">
-                {columnTasks.map((task) => (
-                  <KanbanTaskCard
-                    key={task.id}
-                    task={task}
-                    draggedTask={draggedTask}
-                    isHighlighted={highlightedTaskId === task.id}
-                    onDragStart={(e) => handleDragStart(e, task.id)}
-                    onDragEnd={handleDragEnd}
-                    onClick={() => {
-                      if (!didDragRef.current) onTaskClick(task.id);
-                    }}
-                  />
+                {columnTasks.map((task, index) => (
+                  <div key={task.id} className="relative">
+                    {isDragOver && dropTarget?.index === index && (
+                      <div className="pointer-events-none absolute -top-1.5 left-0 right-0 z-10 h-1 rounded-full bg-[#2563EB]" />
+                    )}
+                    <KanbanTaskCard
+                      task={task}
+                      isDragging={draggingId === task.id}
+                      isHighlighted={highlightedTaskId === task.id}
+                      onPointerDown={(e) => startPointerDrag(e, task.id)}
+                      onClick={() => {
+                        if (!didDragRef.current) onTaskClick(task.id);
+                      }}
+                    />
+                  </div>
                 ))}
               </AnimatePresence>
+
+              {isDragOver && dropTarget?.index === columnTasks.length && (
+                <div className="h-1 rounded-full bg-[#2563EB]" />
+              )}
 
               {columnTasks.length === 0 && isDragOver && (
                 <p className="text-xs text-[#2563EB] text-center py-8">Drop here</p>
@@ -698,6 +861,19 @@ export function TaskKanbanBoard({
         </div>
       ) : null}
       </div>
+      {draggingTask &&
+        createPortal(
+          <div
+            ref={ghostRef}
+            className="fixed left-0 top-0 z-[80] pointer-events-none max-w-[220px] truncate rounded-lg border border-[#2563EB] bg-white px-3 py-2 text-sm font-medium text-[#1F2937] shadow-lg"
+            style={{
+              transform: `translate(${pointerRef.current.x + 12}px, ${pointerRef.current.y + 14}px)`,
+            }}
+          >
+            {draggingTask.title}
+          </div>,
+          document.body,
+        )}
     </EdgeScrollArea>
   );
 }

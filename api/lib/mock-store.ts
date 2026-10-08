@@ -2371,6 +2371,24 @@ export function mockUpdateTask(
   return task;
 }
 
+export function mockReorderTasks(
+  items: { id: number; position: number; stage?: string }[],
+  actor: SafeUser,
+) {
+  for (const item of items) {
+    const task = tasks.find((t) => t.id === item.id);
+    if (!task) continue;
+    if (item.stage && item.stage !== task.stage) {
+      mockUpdateTask(item.id, { stage: item.stage }, actor);
+    }
+    const current = tasks.find((t) => t.id === item.id);
+    if (!current) continue;
+    current.position = item.position;
+    current.updatedAt = new Date();
+  }
+  return { success: true as const };
+}
+
 export function mockUpdateStatus(id: number, status: string, actor: SafeUser) {
   return mockUpdateTask(id, { status }, actor);
 }

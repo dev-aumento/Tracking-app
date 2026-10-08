@@ -901,6 +901,72 @@ export const taskRouter = createRouter({
       return updated;
     }),
 
+  reorder: authedQuery
+    .input(
+      z.object({
+        items: z
+          .array(
+            z.object({
+              id: z.number(),
+              position: z.number().int().nonnegative(),
+              stage: projectStageSchema.optional(),
+            }),
+          )
+          .min(1)
+          .max(400),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (useTaskMock()) return mock.mockReorderTasks(input.items, ctx.user);
+
+      await ensureSchema();
+      const now = new Date();
+      const label = actorLabel(ctx.user);
+
+      for (const item of input.items) {
+        const oldTask = await findById<TaskDoc>(Collections.tasks, item.id);
+        if (!oldTask) continue;
+
+        const patch: Partial<TaskDoc> = {
+          position: item.position,
+          updatedAt: now,
+        };
+        const stageChanged = Boolean(item.stage && item.stage !== oldTask.stage);
+        if (item.stage && stageChanged) {
+          patch.stage = item.stage;
+          if (item.stage === "finished") {
+            patch.status = "done";
+            patch.assigneeId = null;
+          } else if (oldTask.status === "done") {
+            patch.status = "in_progress";
+          }
+        }
+
+        await updateById<TaskDoc>(Collections.tasks, item.id, patch);
+
+        if (item.stage && stageChanged) {
+          await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
+            taskId: item.id,
+            userId: ctx.user.id,
+            action: "stage_changed",
+            oldValue: oldTask.stage,
+            newValue: item.stage,
+            metadata: null,
+            createdAt: now,
+          });
+          await notifyTaskMembers({
+            taskId: item.id,
+            actor: ctx.user,
+            type: "task_updated",
+            title: "Task stage changed",
+            message: `${label} moved "${oldTask.title}" to ${item.stage}`,
+          });
+        }
+      }
+
+      return { success: true as const };
+    }),
+
   delete: authedQuery
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input, ctx }) => {
