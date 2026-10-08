@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { PriorityBadge } from "@/components/shared/StatusBadge";
@@ -38,6 +38,52 @@ type KanbanTask = {
   actualHours?: string | number | null;
   assignee?: { name: string | null; avatar?: string | null } | null;
 };
+
+const COLUMN_SCROLL_EDGE_PX = 72;
+const COLUMN_SCROLL_MAX_SPEED = 16;
+
+/** Native drag does not scroll overflow columns. Speed up as the pointer nears the edge. */
+function columnEdgeSpeed(distanceFromOuterEdge: number) {
+  const clamped = Math.min(
+    COLUMN_SCROLL_EDGE_PX,
+    Math.max(0, distanceFromOuterEdge),
+  );
+  const intensity = 1 - clamped / COLUMN_SCROLL_EDGE_PX;
+  return (0.35 + 0.65 * intensity) * COLUMN_SCROLL_MAX_SPEED;
+}
+
+function columnScrollVelocity(
+  el: HTMLElement,
+  clientX: number,
+  clientY: number,
+): number | null {
+  const rect = el.getBoundingClientRect();
+  const x = clientX - rect.left;
+  if (x < -6 || x > rect.width + 6) return null;
+  if (el.scrollHeight - el.clientHeight <= 1) return 0;
+
+  const y = clientY - rect.top;
+  if (y < COLUMN_SCROLL_EDGE_PX) {
+    return -columnEdgeSpeed(y);
+  }
+  const fromBottom = rect.height - y;
+  if (fromBottom < COLUMN_SCROLL_EDGE_PX) {
+    return columnEdgeSpeed(fromBottom);
+  }
+  return 0;
+}
+
+function resolveColumnScroll(
+  columns: Map<string, HTMLElement>,
+  clientX: number,
+  clientY: number,
+): { key: string | null; speed: number } {
+  for (const [key, el] of columns) {
+    const speed = columnScrollVelocity(el, clientX, clientY);
+    if (speed !== null) return { key, speed };
+  }
+  return { key: null, speed: 0 };
+}
 
 function formatKanbanDeadline(dueDate: string | Date) {
   return formatDueLabel(dueDate, {
@@ -216,6 +262,11 @@ export function TaskKanbanBoard({
   const [draggedTask, setDraggedTask] = useState<number | null>(null);
   const didDragRef = useRef(false);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
+  const columnScrollersRef = useRef(new Map<string, HTMLDivElement>());
+  const columnScrollRef = useRef<{ key: string | null; speed: number }>({
+    key: null,
+    speed: 0,
+  });
   const [isAddingSection, setIsAddingSection] = useState(false);
   const [newSectionLabel, setNewSectionLabel] = useState("");
   const newSectionInputRef = useRef<HTMLInputElement>(null);
@@ -252,6 +303,10 @@ export function TaskKanbanBoard({
     },
   });
 
+  const stopColumnScroll = () => {
+    columnScrollRef.current = { key: null, speed: 0 };
+  };
+
   const handleDragStart = (e: React.DragEvent, taskId: number) => {
     e.stopPropagation();
     didDragRef.current = true;
@@ -271,17 +326,53 @@ export function TaskKanbanBoard({
         stage: columnKey,
       });
     }
+    stopColumnScroll();
     setDraggedTask(null);
     setDragOverColumn(null);
   };
 
   const handleDragEnd = () => {
+    stopColumnScroll();
     setDraggedTask(null);
     setDragOverColumn(null);
     requestAnimationFrame(() => {
       didDragRef.current = false;
     });
   };
+
+  useEffect(() => {
+    if (draggedTask == null) return;
+
+    let frame = 0;
+    const syncScroll = (event: DragEvent) => {
+      if (event.clientX === 0 && event.clientY === 0) return;
+      const next = resolveColumnScroll(
+        columnScrollersRef.current,
+        event.clientX,
+        event.clientY,
+      );
+      columnScrollRef.current = next;
+      if (event.type === "dragover" && next.speed !== 0) event.preventDefault();
+    };
+    const tick = () => {
+      const { key, speed } = columnScrollRef.current;
+      if (key && speed !== 0) {
+        const el = columnScrollersRef.current.get(key);
+        if (el) el.scrollTop += speed;
+      }
+      frame = requestAnimationFrame(tick);
+    };
+
+    window.addEventListener("dragover", syncScroll, true);
+    window.addEventListener("drag", syncScroll, true);
+    frame = requestAnimationFrame(tick);
+    return () => {
+      window.removeEventListener("dragover", syncScroll, true);
+      window.removeEventListener("drag", syncScroll, true);
+      cancelAnimationFrame(frame);
+      stopColumnScroll();
+    };
+  }, [draggedTask]);
 
   const submitNewSection = async () => {
     const label = newSectionLabel.trim();
@@ -506,7 +597,14 @@ export function TaskKanbanBoard({
               </div>
             )}
 
-            <div className="flex-1 flex flex-col p-2.5 min-h-0 overflow-y-auto overscroll-y-contain scrollbar-thin">
+            <div
+              ref={(node) => {
+                const map = columnScrollersRef.current;
+                if (node) map.set(column.key, node);
+                else map.delete(column.key);
+              }}
+              className="flex-1 flex flex-col p-2.5 min-h-0 overflow-y-auto overscroll-y-contain scrollbar-thin"
+            >
               <div className="space-y-2.5">
               <AnimatePresence mode="sync">
                 {columnTasks.map((task) => (
