@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { trpc } from "@/providers/trpc";
 import { UserAvatar } from "@/components/shared/UserAvatar";
@@ -239,14 +239,32 @@ function itemsForOrderChange(
   return items;
 }
 
-function dropIndexInColumn(scroller: HTMLElement, clientY: number, draggedId: number | null) {
+function pointerDragDirection(originY: number, clientY: number) {
+  const delta = clientY - originY;
+  if (delta > 8) return "down" as const;
+  if (delta < -8) return "up" as const;
+  return "none" as const;
+}
+
+/** Index in the column with the dragged card removed. */
+function dropIndexInColumn(
+  scroller: HTMLElement,
+  clientY: number,
+  draggedId: number | null,
+  direction: "up" | "down" | "none",
+) {
   const cards = [...scroller.querySelectorAll<HTMLElement>("[data-kanban-task-id]")].filter(
-    (el) => draggedId == null || Number(el.dataset.kanbanTaskId) !== draggedId,
+    (el) => {
+      if (draggedId != null && Number(el.dataset.kanbanTaskId) === draggedId) return false;
+      return el.getBoundingClientRect().height > 8;
+    },
   );
+  // Moving down, the slot is after a card once the pointer is on it.
+  // Moving up, the slot is before a card once the pointer is on it.
+  const ratio = direction === "down" ? 0.2 : direction === "up" ? 0.8 : 0.5;
   for (let index = 0; index < cards.length; index += 1) {
     const rect = cards[index].getBoundingClientRect();
-    if (rect.height <= 0) continue;
-    if (clientY < rect.top + rect.height / 2) return index;
+    if (clientY < rect.top + rect.height * ratio) return index;
   }
   return cards.length;
 }
@@ -316,7 +334,6 @@ function KanbanTaskCard({
   return (
     <motion.div
       data-task-locate-id={task.id}
-      data-kanban-task-id={task.id}
       onPointerDown={onPointerDown}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: isDragging ? 0.35 : 1, y: 0 }}
@@ -429,6 +446,8 @@ export function TaskKanbanBoard({
   const columnScrollersRef = useRef(new Map<string, HTMLDivElement>());
   const boardScrollerRef = useRef<HTMLDivElement | null>(null);
   const pointerRef = useRef({ x: 0, y: 0 });
+  const dragOriginRef = useRef({ x: 0, y: 0 });
+  const draggedNodeRef = useRef<HTMLElement | null>(null);
   const ghostRef = useRef<HTMLDivElement | null>(null);
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -506,17 +525,24 @@ export function TaskKanbanBoard({
 
   const startPointerDrag = (event: React.PointerEvent<HTMLDivElement>, taskId: number) => {
     if (event.button !== 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
     const pointerId = event.pointerId;
     const startX = event.clientX;
     const startY = event.clientY;
     pointerRef.current = { x: startX, y: startY };
+    dragOriginRef.current = { x: startX, y: startY };
     let active = false;
 
+    const concealDraggedCard = (target: EventTarget | null) => {
+      const node = target instanceof Element ? target.closest("[data-kanban-task-id]") : null;
+      if (!(node instanceof HTMLElement) || draggedNodeRef.current === node) return;
+      node.style.setProperty("display", "none", "important");
+      draggedNodeRef.current = node;
+    };
+
     const detach = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onCancel, true);
     };
 
     const onMove = (ev: PointerEvent) => {
@@ -533,57 +559,65 @@ export function TaskKanbanBoard({
           columnKeysRef.current,
           columnOrderRef.current,
         );
+        concealDraggedCard(ev.target);
         setDraggingId(taskId);
       }
       updateDropRef.current(ev.clientX, ev.clientY);
     };
 
-    const onUp = (ev: PointerEvent) => {
-      if (ev.pointerId !== pointerId) return;
+    let finished = false;
+    const finish = (ev: PointerEvent) => {
+      if (finished || ev.pointerId !== pointerId) return;
+      finished = true;
       detach();
       if (!active) return;
-      draggingActiveRef.current = false;
       pointerRef.current = { x: ev.clientX, y: ev.clientY };
       updateDropRef.current(ev.clientX, ev.clientY);
+      const target = dropTargetRef.current;
+      const task = draggingIdRef.current;
+      if (task != null && target) {
+        const plan = planColumnReorder(
+          tasksRef.current,
+          columnKeysRef.current,
+          columnOrderRef.current,
+          task,
+          target,
+        );
+        if (plan) {
+          const nextOrder = { ...columnOrderRef.current, ...plan.orders };
+          columnOrderRef.current = nextOrder;
+          setColumnOrder(nextOrder);
+        }
+      }
       const items = itemsForOrderChange(startOrderRef.current, columnOrderRef.current);
-      const rollback = startOrderRef.current;
+      draggingActiveRef.current = false;
       draggingIdRef.current = null;
       dropTargetRef.current = null;
       setDropTarget(null);
       setDraggingId(null);
       if (items.length > 0) {
-        reorderMutation.mutate(
-          { items },
-          {
-            onError: () => {
-              columnOrderRef.current = rollback;
-              setColumnOrder(rollback);
-            },
-          },
-        );
+        reorderMutation.mutate({ items });
       }
       requestAnimationFrame(() => {
         didDragRef.current = false;
       });
     };
 
-    const onCancel = (ev: PointerEvent) => {
-      if (ev.pointerId !== pointerId) return;
-      detach();
-      draggingActiveRef.current = false;
-      draggingIdRef.current = null;
-      dropTargetRef.current = null;
-      setDropTarget(null);
-      setDraggingId(null);
-      requestAnimationFrame(() => {
-        didDragRef.current = false;
-      });
-    };
+    const onUp = (ev: PointerEvent) => finish(ev);
+    const onCancel = (ev: PointerEvent) => finish(ev);
 
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onCancel, true);
   };
+
+  useLayoutEffect(() => {
+    if (draggingId != null) return;
+    const node = draggedNodeRef.current;
+    if (!node) return;
+    node.style.removeProperty("display");
+    draggedNodeRef.current = null;
+  }, [draggingId]);
 
   useEffect(() => {
     if (draggingId == null) return;
@@ -648,24 +682,18 @@ export function TaskKanbanBoard({
     if (!hit) return;
     const target = {
       columnKey: hit.key,
-      index: dropIndexInColumn(hit.el, y, taskId),
+      index: dropIndexInColumn(
+        hit.el,
+        y,
+        taskId,
+        pointerDragDirection(dragOriginRef.current.y, y),
+      ),
     };
     const prev = dropTargetRef.current;
     if (prev?.columnKey !== target.columnKey || prev.index !== target.index) {
       dropTargetRef.current = target;
       setDropTarget(target);
     }
-    const plan = planColumnReorder(
-      tasksRef.current,
-      columnKeysRef.current,
-      columnOrderRef.current,
-      taskId,
-      target,
-    );
-    if (!plan) return;
-    const nextOrder = { ...columnOrderRef.current, ...plan.orders };
-    columnOrderRef.current = nextOrder;
-    setColumnOrder(nextOrder);
   };
   const draggingTask = draggingId == null ? null : tasks.find((task) => task.id === draggingId) ?? null;
 
@@ -860,23 +888,53 @@ export function TaskKanbanBoard({
               }}
               className="flex-1 flex flex-col p-2.5 min-h-0 overflow-y-auto overscroll-y-contain scrollbar-thin"
             >
-              <div className="space-y-2.5">
-                {columnTasks.map((task) => (
-                  <KanbanTaskCard
-                    key={task.id}
-                    task={task}
-                    isDragging={draggingId === task.id}
-                    isHighlighted={highlightedTaskId === task.id}
-                    onPointerDown={(e) => startPointerDrag(e, task.id)}
-                    onClick={() => {
-                      if (!didDragRef.current) onTaskClick(task.id);
-                    }}
-                  />
-                ))}
-
-              {columnTasks.length === 0 && isDragOver && (
-                <p className="text-xs text-[#2563EB] text-center py-8">Drop here</p>
-              )}
+              <div className="relative flex flex-col gap-2.5">
+                {(() => {
+                  const nodes: ReactNode[] = [];
+                  let slot = 0;
+                  const showSlot = isDragOver && draggingId != null;
+                  for (const task of columnTasks) {
+                    const dragging = draggingId === task.id;
+                    if (showSlot && !dragging && dropTarget?.index === slot) {
+                      nodes.push(
+                        <div
+                          key="drop-slot"
+                          className="h-1.5 shrink-0 rounded-full bg-[#2563EB]"
+                        />,
+                      );
+                    }
+                    nodes.push(
+                      <div key={task.id} data-kanban-task-id={task.id}>
+                        <KanbanTaskCard
+                          task={task}
+                          isDragging={dragging}
+                          isHighlighted={highlightedTaskId === task.id}
+                          onPointerDown={(e) => startPointerDrag(e, task.id)}
+                          onClick={() => {
+                            if (!didDragRef.current) onTaskClick(task.id);
+                          }}
+                        />
+                      </div>,
+                    );
+                    if (!dragging) slot += 1;
+                  }
+                  if (showSlot && (dropTarget?.index ?? 0) >= slot) {
+                    nodes.push(
+                      <div
+                        key="drop-slot"
+                        className="h-1.5 shrink-0 rounded-full bg-[#2563EB]"
+                      />,
+                    );
+                  }
+                  if (columnTasks.length === 0 && isDragOver) {
+                    nodes.push(
+                      <p key="empty-drop" className="text-xs text-[#2563EB] text-center py-8">
+                        Drop here
+                      </p>,
+                    );
+                  }
+                  return nodes;
+                })()}
               </div>
             </div>
           </div>
