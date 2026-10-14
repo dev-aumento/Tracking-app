@@ -53,7 +53,7 @@ export default function MobileWhatsNew() {
           </span>
           <div>
             <p className="text-[15px] font-semibold text-[#1F2937] dark:text-white">
-              Tracker mobile updates
+              Aaso mobile updates
             </p>
             <p className="mt-0.5 text-sm text-gray-500 dark:text-white/50">
               Recent improvements so the app feels native on your phone.

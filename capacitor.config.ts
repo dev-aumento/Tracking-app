@@ -1,15 +1,15 @@
 import type { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
-  appId: "com.aumento.tracker",
-  appName: "Aumento Tracker",
+  appId: "com.team.aaso.tech",
+  appName: "Aaso",
   webDir: "dist/public",
   server: {
     // Load the live app so session cookies / auth work out of the box.
     // Remove `url` later to ship a fully offline-bundled WebView build.
-    url: "https://tracking-crm.fly.dev",
+    url: "https://team.aaso.tech",
     cleartext: false,
-    allowNavigation: ["tracking-crm.fly.dev", "*.fly.dev"],
+    allowNavigation: ["team.aaso.tech"],
   },
   android: {
     allowMixedContent: false,
@@ -18,7 +18,7 @@ const config: CapacitorConfig = {
   ios: {
     // When the iOS project is generated (`npx cap add ios`), ensure Info.plist includes:
     // NSLocationWhenInUseUsageDescription — shown when requesting location for clock-in.
-    scheme: "Aumento Tracker",
+    scheme: "Aaso",
   },
   plugins: {
     SplashScreen: {

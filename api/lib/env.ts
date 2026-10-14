@@ -12,17 +12,23 @@ function isMongoConnectionString(value: string) {
   return value.startsWith("mongodb+srv://") || value.startsWith("mongodb://");
 }
 
+function readEnv(name: string): string {
+  const value = process.env[name]?.trim() ?? "";
+  if (!value || value === "undefined") return "";
+  return value;
+}
+
 /** Standard (non-SRV) URI — works when mongodb+srv DNS fails on Windows */
 function buildStandardMongoUri(): string {
-  const direct = process.env.MONGODB_URI_STANDARD?.trim() ?? "";
+  const direct = readEnv("MONGODB_URI_STANDARD");
   if (direct && isMongoConnectionString(direct)) {
     return direct;
   }
 
-  const user = process.env.MONGODB_USER?.trim();
-  const password = process.env.MONGODB_PASSWORD?.trim();
-  const hosts = process.env.MONGODB_STANDARD_HOSTS?.trim();
-  const dbName = process.env.MONGODB_DB_NAME?.trim() || "tracker_app";
+  const user = readEnv("MONGODB_USER");
+  const password = readEnv("MONGODB_PASSWORD");
+  const hosts = readEnv("MONGODB_STANDARD_HOSTS");
+  const dbName = readEnv("MONGODB_DB_NAME") || "tracker_app";
 
   if (user && password && hosts) {
     const encodedUser = encodeURIComponent(user);
@@ -34,20 +40,20 @@ function buildStandardMongoUri(): string {
 }
 
 function buildSrvMongoUri(): string {
-  const direct = process.env.MONGODB_URI?.trim() ?? "";
+  const direct = readEnv("MONGODB_URI");
   if (direct && !direct.includes("YOUR_CLUSTER") && isMongoConnectionString(direct)) {
     return direct;
   }
 
-  const legacy = process.env.DATABASE_URL?.trim() ?? "";
+  const legacy = readEnv("DATABASE_URL");
   if (legacy && isMongoConnectionString(legacy) && !legacy.includes("YOUR_CLUSTER")) {
     return legacy;
   }
 
-  const user = process.env.MONGODB_USER?.trim();
-  const password = process.env.MONGODB_PASSWORD?.trim();
-  const host = process.env.MONGODB_CLUSTER_HOST?.trim();
-  const dbName = process.env.MONGODB_DB_NAME?.trim() || "tracker_app";
+  const user = readEnv("MONGODB_USER");
+  const password = readEnv("MONGODB_PASSWORD");
+  const host = readEnv("MONGODB_CLUSTER_HOST");
+  const dbName = readEnv("MONGODB_DB_NAME") || "tracker_app";
 
   if (user && password && host) {
     const encodedUser = encodeURIComponent(user);
@@ -81,6 +87,6 @@ export const env = {
   get mongoUri() {
     return getMongoUri();
   },
-  mongoDbName: process.env.MONGODB_DB_NAME ?? "tracker_app",
+  mongoDbName: readEnv("MONGODB_DB_NAME") || "tracker_app",
   databaseUrl: process.env.DATABASE_URL ?? "",
 };

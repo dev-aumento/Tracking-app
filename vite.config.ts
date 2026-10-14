@@ -6,16 +6,24 @@ import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
 // https://vite.dev/config/
+function assignEnv(key: string, value: string | undefined) {
+  const next = value?.trim();
+  // Node stringifies `undefined`, which made Mongo look up a host named "undefined".
+  if (!next || next === "undefined") return;
+  if (!process.env[key]) process.env[key] = next;
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, path.resolve(__dirname), "");
-  process.env.MONGODB_USER ??= env.MONGODB_USER;
-  process.env.MONGODB_PASSWORD ??= env.MONGODB_PASSWORD;
-  process.env.MONGODB_DB_NAME ??= env.MONGODB_DB_NAME;
-  process.env.MONGODB_CLUSTER_HOST ??= env.MONGODB_CLUSTER_HOST;
-  process.env.MONGODB_STANDARD_HOSTS ??= env.MONGODB_STANDARD_HOSTS;
-  process.env.MONGODB_URI ??= env.MONGODB_URI;
-  process.env.AUTH_DISABLED ??= env.AUTH_DISABLED;
-  process.env.APP_SECRET ??= env.APP_SECRET;
+  assignEnv("MONGODB_USER", env.MONGODB_USER);
+  assignEnv("MONGODB_PASSWORD", env.MONGODB_PASSWORD);
+  assignEnv("MONGODB_DB_NAME", env.MONGODB_DB_NAME);
+  assignEnv("MONGODB_CLUSTER_HOST", env.MONGODB_CLUSTER_HOST);
+  assignEnv("MONGODB_STANDARD_HOSTS", env.MONGODB_STANDARD_HOSTS);
+  assignEnv("MONGODB_URI", env.MONGODB_URI);
+  assignEnv("MONGODB_URI_STANDARD", env.MONGODB_URI_STANDARD);
+  assignEnv("AUTH_DISABLED", env.AUTH_DISABLED);
+  assignEnv("APP_SECRET", env.APP_SECRET);
 
   return {
   plugins: [

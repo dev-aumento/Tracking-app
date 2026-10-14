@@ -39,22 +39,27 @@ async function createMongoDb(): Promise<Db> {
     );
   }
 
-  const nextClient = new MongoClient(env.mongoUri, {
+  const uri = env.mongoUri;
+  // A single VPS Mongo (not Atlas) must stay on that host. directConnection
+  // false makes the driver chase replica-set members that this PC cannot reach.
+  const directConnection =
+    !uri.startsWith("mongodb+srv://") && !/[?&]replicaSet=/i.test(uri);
+
+  const nextClient = new MongoClient(uri, {
     serverSelectionTimeoutMS: 15000,
     connectTimeoutMS: 15000,
     minPoolSize: 2,
     maxPoolSize: 20,
     family: 4,
-    // Re-discover replica set members after Atlas storage / election changes.
-    directConnection: false,
+    directConnection,
   });
 
   try {
     await nextClient.connect();
-    // Force a topology refresh against the current primary.
-    await nextClient.db("admin").command({ ping: 1 });
+    const database = nextClient.db(env.mongoDbName);
+    await database.command({ ping: 1 });
     client = nextClient;
-    db = nextClient.db(env.mongoDbName);
+    db = database;
     return db;
   } catch (error) {
     try {

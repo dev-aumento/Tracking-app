@@ -13,7 +13,7 @@ const plistPath = path.join(root, "ios", "App", "App", "Info.plist");
 
 const KEY = "NSLocationWhenInUseUsageDescription";
 const VALUE =
-  "Aumento Tracker needs your location to verify you are at an allowed work site before clock-in.";
+  "Aaso needs your location to verify you are at an allowed work site before clock-in.";
 
 if (!fs.existsSync(plistPath)) {
   console.log(
