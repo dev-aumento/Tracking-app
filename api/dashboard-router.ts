@@ -262,6 +262,7 @@ type UpcomingLeaveSummaryItem = {
   leaveType: string;
   leaveTypeLabel: string;
   isHalfDay: boolean;
+  halfDayPeriod: "first" | "second" | null;
 };
 
 async function buildLeaveSummary(
@@ -327,6 +328,10 @@ async function buildLeaveSummary(
         leaveType: leaveTypeShort(l.leaveType),
         leaveTypeLabel: leaveTypeSummaryLabel(l.leaveType),
         isHalfDay: isHalfDayLeave(l),
+        halfDayPeriod:
+          l.halfDayPeriod === "first" || l.halfDayPeriod === "second"
+            ? l.halfDayPeriod
+            : null,
       };
 
       if (isWfh) {

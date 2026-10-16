@@ -4447,6 +4447,11 @@ export function mockHrDashboard() {
                 : l.leaveType === "wfh"
                   ? "Work from home"
                   : "Half day",
+        isHalfDay: isHalfDayLeave(l),
+        halfDayPeriod:
+          l.halfDayPeriod === "first" || l.halfDayPeriod === "second"
+            ? l.halfDayPeriod
+            : null,
       };
       if (isWfh) {
         upcomingWfhItems.push(item);
@@ -4876,6 +4881,17 @@ export function mockApprovedLeavesInRange(
   };
 }
 
+function mockHalfDayPeriod(
+  isHalfDay: boolean,
+  period: "first" | "second" | undefined,
+): "first" | "second" | null {
+  if (!isHalfDay) return null;
+  if (period !== "first" && period !== "second") {
+    throw new Error("Please choose first half or second half");
+  }
+  return period;
+}
+
 export function mockApplyLeave(
   userId: number,
   input: {
@@ -4884,6 +4900,7 @@ export function mockApplyLeave(
     endDate: string;
     reason: string;
     isHalfDay?: boolean;
+    halfDayPeriod?: "first" | "second";
   },
 ) {
   const isHalfDay = Boolean(input.isHalfDay) && !isWorkFromHomeLeave(input.leaveType);
@@ -4901,8 +4918,7 @@ export function mockApplyLeave(
     ? 0.5
     : leaveDayUnits(input.leaveType, input.startDate, input.endDate, false);
   if (days <= 0) throw new Error("End date must be on or after the start date");
-  const todayKey = workZoneDateKey(new Date());
-  if (input.startDate < todayKey) throw new Error("Leave cannot start in the past");
+  const halfDayPeriod = mockHalfDayPeriod(isHalfDay, input.halfDayPeriod);
   const requestEndDate = isHalfDay ? input.startDate : input.endDate;
   mockAssertNoOverlappingLeave({
     userId,
@@ -4923,6 +4939,7 @@ export function mockApplyLeave(
     organizationId: userById(userId)?.organizationId ?? 1,
     leaveType: input.leaveType,
     isHalfDay,
+    halfDayPeriod,
     startDate: input.startDate,
     endDate: requestEndDate,
     days,
@@ -4981,6 +4998,7 @@ export function mockUpdateMyLeave(
     endDate: string;
     reason: string;
     isHalfDay?: boolean;
+    halfDayPeriod?: "first" | "second";
   },
 ) {
   const existing = leaveRequests.find((r) => r.id === input.id);
@@ -5011,7 +5029,7 @@ export function mockUpdateMyLeave(
     ? 0.5
     : leaveDayUnits(input.leaveType, input.startDate, input.endDate, false);
   if (days <= 0) throw new Error("End date must be on or after the start date");
-  if (input.startDate < todayKey) throw new Error("Leave cannot start in the past");
+  const halfDayPeriod = mockHalfDayPeriod(isHalfDay, input.halfDayPeriod);
 
   const requestEndDate = isHalfDay ? input.startDate : input.endDate;
   mockAssertNoOverlappingLeave({
@@ -5033,6 +5051,7 @@ export function mockUpdateMyLeave(
   const now = new Date();
   existing.leaveType = input.leaveType;
   existing.isHalfDay = isHalfDay;
+  existing.halfDayPeriod = halfDayPeriod;
   existing.startDate = input.startDate;
   existing.endDate = requestEndDate;
   existing.days = days;
@@ -5091,6 +5110,7 @@ export function mockCreateManualLeave(
     endDate: string;
     reason?: string;
     isHalfDay?: boolean;
+    halfDayPeriod?: "first" | "second";
     status: "approved" | "rejected";
     reviewNote?: string;
   },
@@ -5116,6 +5136,7 @@ export function mockCreateManualLeave(
     ? 0.5
     : leaveDayUnits(input.leaveType, input.startDate, input.endDate, false);
   if (days <= 0) throw new Error("End date must be on or after the start date");
+  const halfDayPeriod = mockHalfDayPeriod(isHalfDay, input.halfDayPeriod);
 
   const requestEndDate = isHalfDay ? input.startDate : input.endDate;
   if (input.status === "approved") {
@@ -5145,6 +5166,7 @@ export function mockCreateManualLeave(
     organizationId: userById(input.userId)?.organizationId ?? 1,
     leaveType: input.leaveType,
     isHalfDay,
+    halfDayPeriod,
     startDate: input.startDate,
     endDate: requestEndDate,
     days,

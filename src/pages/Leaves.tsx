@@ -18,6 +18,7 @@ import {
   annualSickLeaveEntitlement,
   annualWfhEntitlement,
   allowsHalfDayLeave,
+  type HalfDayPeriod,
   alreadyAppliedLeaveMessage,
   canCancelLeaveRequest,
   canEditLeaveRequest,
@@ -55,6 +56,7 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { holidayVisualForName } from "@/lib/holiday-icons";
+import { HalfDayPeriodField } from "@/components/leaves/HalfDayPeriodField";
 import { HolidayCalendarDayButton } from "@/components/leaves/HolidayCalendarDayButton";
 import type { CalendarHolidayBadge } from "@/components/leaves/HolidayCalendarDayButton";
 import { PublicHolidayListRow } from "@/components/leaves/PublicHolidayListRow";
@@ -63,6 +65,7 @@ type LeaveRequestItem = {
   id: number;
   leaveType: string;
   isHalfDay?: boolean | null;
+  halfDayPeriod?: HalfDayPeriod | null;
   startDate: string;
   endDate: string;
   days: number;
@@ -125,6 +128,7 @@ export default function Leaves() {
   const [holidaysExpanded, setHolidaysExpanded] = useState(false);
   const [leaveType, setLeaveType] = useState<LeaveType>("paid");
   const [duration, setDuration] = useState<LeaveDuration>("full");
+  const [halfDayPeriod, setHalfDayPeriod] = useState<HalfDayPeriod | "">("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [selectedRequestId, setSelectedRequestId] = useState<number | null>(null);
@@ -180,6 +184,7 @@ export default function Leaves() {
       setReason("");
       setError(null);
       setDuration("full");
+      setHalfDayPeriod("");
       await Promise.all([
         utils.leave.myBalance.invalidate(),
         utils.leave.myRequests.invalidate(),
@@ -226,6 +231,7 @@ export default function Leaves() {
     if (isWorkFromHomeLeave(next) && duration === "half") {
       const day = singleDate ?? range?.from;
       setDuration("full");
+      setHalfDayPeriod("");
       if (day) setRange({ from: day, to: day });
       setSingleDate(undefined);
       return;
@@ -248,6 +254,7 @@ export default function Leaves() {
       setSingleDate(day);
       setRange(undefined);
     } else if (wasHalf && singleDate) {
+      setHalfDayPeriod("");
       setRange({ from: singleDate, to: singleDate });
     }
   };
@@ -343,6 +350,10 @@ export default function Leaves() {
       setError("Please select a leave date (or date range) on the calendar.");
       return;
     }
+    if (isHalfLeave && !halfDayPeriod) {
+      setError("Please choose first half or second half.");
+      return;
+    }
     if (!reason.trim() || reason.trim().length < 3) {
       setError("Please enter a reason (at least 3 characters).");
       return;
@@ -372,6 +383,8 @@ export default function Leaves() {
       endDate,
       reason: reason.trim(),
       isHalfDay: isHalfLeave && allowsHalfDayLeave(leaveType),
+      halfDayPeriod:
+        isHalfLeave && allowsHalfDayLeave(leaveType) ? halfDayPeriod || undefined : undefined,
     });
   };
 
@@ -466,10 +479,7 @@ export default function Leaves() {
                   selected={singleDate}
                   onSelect={setSingleDate}
                   numberOfMonths={1}
-                  disabled={[
-                    { before: new Date(new Date().setHours(0, 0, 0, 0)) },
-                    { dayOfWeek: [0, 6] },
-                  ]}
+                  disabled={[{ dayOfWeek: [0, 6] }]}
                   modifiers={{ holiday: holidayDates }}
                   modifiersClassNames={{
                     holiday: "font-medium",
@@ -485,10 +495,7 @@ export default function Leaves() {
                   selected={range}
                   onSelect={setRange}
                   numberOfMonths={1}
-                  disabled={[
-                    { before: new Date(new Date().setHours(0, 0, 0, 0)) },
-                    { dayOfWeek: [0, 6] },
-                  ]}
+                  disabled={[{ dayOfWeek: [0, 6] }]}
                   modifiers={{ holiday: holidayDates }}
                   modifiersClassNames={{
                     holiday: "font-medium",
@@ -549,9 +556,9 @@ export default function Leaves() {
                   </>
                 )
               ) : isHalfLeave ? (
-                "Select a weekday (Mon–Fri) for half-day leave. Sat/Sun are off."
+                "Select a weekday (Mon–Fri), including past dates, for half-day leave. Sat/Sun are off."
               ) : (
-                "Select a weekday (Mon–Fri). Ranges can span weekends; Sat/Sun don’t count."
+                "Select a weekday (Mon–Fri), including past dates. Ranges can span weekends; Sat/Sun don’t count."
               )}
             </div>
             <p className="relative z-10 px-4 pb-2 text-[11px] text-gray-400 lg:hidden">
@@ -620,6 +627,12 @@ export default function Leaves() {
                     ? " Does not deduct from PL or SL balance."
                     : ""}
                 </p>
+                {isHalfLeave ? (
+                  <HalfDayPeriodField
+                    value={halfDayPeriod}
+                    onChange={setHalfDayPeriod}
+                  />
+                ) : null}
               </div>
             </div>
 
@@ -825,6 +838,7 @@ function LeaveRequestDetailDialog({
   const [editing, setEditing] = useState(false);
   const [leaveType, setLeaveType] = useState<LeaveType>("paid");
   const [duration, setDuration] = useState<LeaveDuration>("full");
+  const [halfDayPeriod, setHalfDayPeriod] = useState<HalfDayPeriod | "">("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [reason, setReason] = useState("");
@@ -843,6 +857,11 @@ function LeaveRequestDetailDialog({
       request.isHalfDay || request.leaveType === "half" || request.days === 0.5
         ? "half"
         : "full",
+    );
+    setHalfDayPeriod(
+      request.halfDayPeriod === "first" || request.halfDayPeriod === "second"
+        ? request.halfDayPeriod
+        : "",
     );
     setStartDate(request.startDate);
     setEndDate(request.endDate);
@@ -931,6 +950,10 @@ function LeaveRequestDetailDialog({
       setEditError("Please select an end date.");
       return;
     }
+    if (isHalfDay && !halfDayPeriod) {
+      setEditError("Please choose first half or second half.");
+      return;
+    }
     if (!reason.trim() || reason.trim().length < 3) {
       setEditError("Please enter a reason (at least 3 characters).");
       return;
@@ -951,6 +974,8 @@ function LeaveRequestDetailDialog({
       endDate: effectiveEnd,
       reason: reason.trim(),
       isHalfDay: isHalfDay && allowsHalfDayLeave(leaveType),
+      halfDayPeriod:
+        isHalfDay && allowsHalfDayLeave(leaveType) ? halfDayPeriod || undefined : undefined,
     });
   };
 
@@ -1042,6 +1067,13 @@ function LeaveRequestDetailDialog({
                 <p className="text-[11px] text-gray-400 mt-1.5">
                   {durationHint(leaveType, duration)}
                 </p>
+                {isHalfDay ? (
+                  <HalfDayPeriodField
+                    value={halfDayPeriod}
+                    onChange={setHalfDayPeriod}
+                    variant="soft"
+                  />
+                ) : null}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -1050,7 +1082,6 @@ function LeaveRequestDetailDialog({
                   <input
                     type="date"
                     value={startDate}
-                    min={todayKey}
                     onChange={(e) => {
                       setStartDate(e.target.value);
                       if (isHalfDay || (endDate && endDate < e.target.value)) {
@@ -1065,7 +1096,7 @@ function LeaveRequestDetailDialog({
                   <input
                     type="date"
                     value={isHalfDay ? startDate : endDate}
-                    min={startDate || todayKey}
+                    min={startDate || undefined}
                     disabled={isHalfDay}
                     onChange={(e) => setEndDate(e.target.value)}
                     className="w-full h-9 px-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] disabled:bg-gray-50"
@@ -1121,6 +1152,11 @@ function LeaveRequestDetailDialog({
                         request.days === 0.5
                         ? "half"
                         : "full",
+                    );
+                    setHalfDayPeriod(
+                      request.halfDayPeriod === "first" || request.halfDayPeriod === "second"
+                        ? request.halfDayPeriod
+                        : "",
                     );
                     setStartDate(request.startDate);
                     setEndDate(request.endDate);

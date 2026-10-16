@@ -11,6 +11,7 @@ export type LeaveSummaryItem = {
   name: string;
   leaveTypeLabel: string;
   isHalfDay?: boolean;
+  halfDayPeriod?: "first" | "second" | null;
 };
 
 function groupBySection(items: LeaveSummaryItem[]) {
@@ -36,10 +37,12 @@ function formatLeaveDate(dateKey: string) {
   return `${day}-${month}-${year}`;
 }
 
-function HalfDayBadge() {
+function HalfDayBadge({ period }: { period?: "first" | "second" | null }) {
+  const label =
+    period === "first" ? "First half" : period === "second" ? "Second half" : "Half day";
   return (
     <span className="inline-flex shrink-0 items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 ring-1 ring-amber-100">
-      Half day
+      {label}
     </span>
   );
 }
@@ -88,7 +91,9 @@ function SummaryColumn({
                         <div className="text-sm font-medium text-[#1F2937] truncate">
                           {item.name}
                         </div>
-                        {item.isHalfDay ? <HalfDayBadge /> : null}
+                        {item.isHalfDay ? (
+                          <HalfDayBadge period={item.halfDayPeriod} />
+                        ) : null}
                       </div>
                       <div className="text-xs text-gray-400">{detailLine(item)}</div>
                     </div>

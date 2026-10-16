@@ -392,6 +392,7 @@ export const HALF_DAY_REQUIRED_WORK_HOURS = 5;
  */
 export type LeaveType = "paid" | "sick" | "unpaid" | "half" | "wfh";
 export type LeaveDuration = "full" | "half";
+export type HalfDayPeriod = "first" | "second";
 export type LeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
 
 /** Work-from-home requests never reduce required hours and never use PL/SL. */
@@ -440,6 +441,20 @@ export const LEAVE_DURATION_OPTIONS: {
   { value: "full", label: "Full day" },
   { value: "half", label: "Half day" },
 ];
+
+export const HALF_DAY_PERIOD_OPTIONS: {
+  value: HalfDayPeriod;
+  label: string;
+}[] = [
+  { value: "first", label: "First half" },
+  { value: "second", label: "Second half" },
+];
+
+export function halfDayPeriodLabel(period: string | null | undefined): string | null {
+  if (period === "first") return "First half";
+  if (period === "second") return "Second half";
+  return null;
+}
 
 /** @deprecated Use LEAVE_DURATION_OPTIONS */
 export const SICK_DURATION_OPTIONS = LEAVE_DURATION_OPTIONS;

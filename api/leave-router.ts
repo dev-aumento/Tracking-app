@@ -302,6 +302,22 @@ async function assertYearScopedBalance(params: {
   }
 }
 
+const halfDayPeriodSchema = z.enum(["first", "second"]).optional();
+
+function resolveHalfDayPeriod(
+  isHalfDay: boolean,
+  period: "first" | "second" | undefined,
+): "first" | "second" | null {
+  if (!isHalfDay) return null;
+  if (period !== "first" && period !== "second") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Please choose first half or second half",
+    });
+  }
+  return period;
+}
+
 const applySchema = z.object({
   leaveType: leaveTypeSchema,
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -309,6 +325,7 @@ const applySchema = z.object({
   reason: z.string().trim().min(3).max(1000),
   /** Half day deducts 0.5 from balance (if any) and requires 5h work that day. Not used for WFH. */
   isHalfDay: z.boolean().optional().default(false),
+  halfDayPeriod: halfDayPeriodSchema,
 });
 
 const reviewSchema = z.object({
@@ -346,6 +363,7 @@ const manualEntrySchema = z
     endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     reason: z.string().trim().max(1000).optional().default(""),
     isHalfDay: z.boolean().optional().default(false),
+    halfDayPeriod: halfDayPeriodSchema,
     status: z.enum(["approved", "rejected"]),
     reviewNote: z.string().trim().max(500).optional(),
   })
@@ -452,14 +470,7 @@ export const leaveRouter = createRouter({
       });
     }
 
-    const todayKey = workZoneDateKey(new Date());
-    if (input.startDate < todayKey) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "Leave cannot start in the past",
-      });
-    }
-
+    const halfDayPeriod = resolveHalfDayPeriod(isHalfDay, input.halfDayPeriod);
     const requestEndDate = isHalfDay ? input.startDate : input.endDate;
     await assertNoOverlappingLeave({
       userId: ctx.user.id,
@@ -481,6 +492,7 @@ export const leaveRouter = createRouter({
       organizationId: requireOrganizationId(ctx.user),
       leaveType: input.leaveType,
       isHalfDay,
+      halfDayPeriod,
       startDate: input.startDate,
       endDate: requestEndDate,
       days,
@@ -569,13 +581,8 @@ export const leaveRouter = createRouter({
         message: "End date must be on or after the start date",
       });
     }
-    if (input.startDate < todayKey) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "Leave cannot start in the past",
-      });
-    }
 
+    const halfDayPeriod = resolveHalfDayPeriod(isHalfDay, input.halfDayPeriod);
     const requestEndDate = isHalfDay ? input.startDate : input.endDate;
     await assertNoOverlappingLeave({
       userId: ctx.user.id,
@@ -601,6 +608,7 @@ export const leaveRouter = createRouter({
       {
         leaveType: input.leaveType,
         isHalfDay,
+        halfDayPeriod,
         startDate: input.startDate,
         endDate: requestEndDate,
         days,
@@ -674,6 +682,7 @@ export const leaveRouter = createRouter({
       });
     }
 
+    const halfDayPeriod = resolveHalfDayPeriod(isHalfDay, input.halfDayPeriod);
     const requestEndDate = isHalfDay ? input.startDate : input.endDate;
     // Block duplicate dates for approved entries (and still prevent stacking on pending).
     if (input.status === "approved") {
@@ -702,6 +711,7 @@ export const leaveRouter = createRouter({
       organizationId: requireOrganizationId(ctx.user),
       leaveType: input.leaveType,
       isHalfDay,
+      halfDayPeriod,
       startDate: input.startDate,
       endDate: requestEndDate,
       days,

@@ -34,12 +34,14 @@ import {
   resolveEmploymentType,
   toJoiningDateKey,
   wfhRequestBlockedMessage,
+  type HalfDayPeriod,
   type LeaveDuration,
   type LeaveType,
 } from "@/lib/leave-policy";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { UserSearchSelect } from "@/components/tasks/UserSearchSelect";
 import { formatWorkZoneDateKey, formatWorkZoneDateTime, workZoneDateKey, workZoneDateParts } from "@/lib/timezone";
+import { HalfDayPeriodField } from "@/components/leaves/HalfDayPeriodField";
 import { PublicHolidayListRow } from "@/components/leaves/PublicHolidayListRow";
 import {
   approvedLeaveDateKeysForUser,
@@ -2171,6 +2173,7 @@ function ManualLeaveEntryDialog({
     endDate: string;
     reason: string;
     isHalfDay: boolean;
+    halfDayPeriod?: HalfDayPeriod;
     status: "approved" | "rejected";
     reviewNote?: string;
   }) => void;
@@ -2178,6 +2181,7 @@ function ManualLeaveEntryDialog({
   const [userId, setUserId] = useState<number | "">("");
   const [leaveType, setLeaveType] = useState<"paid" | "sick" | "unpaid" | "wfh">("paid");
   const [duration, setDuration] = useState<LeaveDuration>("full");
+  const [halfDayPeriod, setHalfDayPeriod] = useState<HalfDayPeriod | "">("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [reason, setReason] = useState("");
@@ -2206,6 +2210,7 @@ function ManualLeaveEntryDialog({
     setUserId("");
     setLeaveType("paid");
     setDuration("full");
+    setHalfDayPeriod("");
     setStartDate("");
     setEndDate("");
     setReason("");
@@ -2244,6 +2249,10 @@ function ManualLeaveEntryDialog({
       setError("End date must be on or after the start date.");
       return;
     }
+    if (isHalfDay && !halfDayPeriod) {
+      setError("Please choose first half or second half.");
+      return;
+    }
     if (!isWorkFromHomeLeave(leaveType) && reason.trim().length < 3) {
       setError("Please enter a reason (at least 3 characters).");
       return;
@@ -2270,6 +2279,8 @@ function ManualLeaveEntryDialog({
       endDate: submitEnd,
       reason: isWorkFromHomeLeave(leaveType) ? "" : reason.trim(),
       isHalfDay: isHalfDay && allowsHalfDayLeave(leaveType),
+      halfDayPeriod:
+        isHalfDay && allowsHalfDayLeave(leaveType) ? halfDayPeriod || undefined : undefined,
       status,
       reviewNote: reviewNote.trim() || undefined,
     });
@@ -2391,6 +2402,13 @@ function ManualLeaveEntryDialog({
               })}
             </div>
             <p className="text-[11px] text-gray-400">{durationHint(leaveType, duration)}</p>
+            {isHalfDay ? (
+              <HalfDayPeriodField
+                value={halfDayPeriod}
+                onChange={setHalfDayPeriod}
+                variant="pill"
+              />
+            ) : null}
           </div>
 
           <div className={cn("grid gap-3", isHalfDay ? "grid-cols-1" : "grid-cols-2")}>

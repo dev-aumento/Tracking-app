@@ -410,6 +410,8 @@ export type LeaveRequestDoc = {
   leaveType: LeaveType;
   /** True for half-day sick (and mirrored for leaveType "half"). */
   isHalfDay?: boolean | null;
+  /** Which part of the day a half-day leave covers. */
+  halfDayPeriod?: "first" | "second" | null;
   startDate: string;
   endDate: string;
   days: number;
